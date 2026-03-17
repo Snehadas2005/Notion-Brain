@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+notion-client
+networkx
+pydantic
+python-dotenv
+httpx
+numpy
