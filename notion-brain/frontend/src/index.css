@@ -1,34 +1,57 @@
+@import url('https://fonts.googleapis.com/css2?family=Bangers&family=Share+Tech+Mono&family=EB+Garamond:ital,wght@0,400;0,700;1,400&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: dark;
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
-body {
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
   margin: 0;
   padding: 0;
-  background-color: #0a0a0c;
-  color: #fff;
-  font-family: 'Inter', sans-serif;
   overflow: hidden;
 }
 
-/* Custom Scrollbar */
+/* Manga scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 5px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.04);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* Space-mode scrollbar override via .space class if needed */
+.space-scrollbar::-webkit-scrollbar-track {
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.space-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.28);
+  border-radius: 2px;
+}
+
+.space-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.55);
 }
