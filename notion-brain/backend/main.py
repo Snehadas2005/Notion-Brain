@@ -1,10 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 from routes.graph import router
+
+load_dotenv()  # ← THIS IS THE CRITICAL MISSING LINE
 
 app = FastAPI(title="Notion Brain API")
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,7 +15,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include the graph router
 app.include_router(router, prefix="/api")
 
 @app.get("/")

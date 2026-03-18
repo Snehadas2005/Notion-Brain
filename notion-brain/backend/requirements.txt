@@ -6,3 +6,5 @@ pydantic
 python-dotenv
 httpx
 numpy
+sentence-transformers
+scikit-learn

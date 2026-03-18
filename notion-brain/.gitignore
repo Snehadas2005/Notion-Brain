@@ -42,3 +42,6 @@ desktop.ini
 # Project specific
 backend/notion_cache/
 frontend/.vite-inspec
+
+backend/.env
+frontend/.env
