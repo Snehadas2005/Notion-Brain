@@ -1,121 +1,143 @@
-def get_all_pages():
-    return [
-        {
-            "id": "page-001",
-            "url": "https://notion.so/page-001",
-            "created_time": "2024-01-01T10:00:00.000Z",
-            "last_edited_time": "2024-03-10T15:30:00.000Z",
-            "properties": {
-                "title": {"title": [{"plain_text": "Machine Learning Notes"}]}
-            }
-        },
-        {
-            "id": "page-002",
-            "url": "https://notion.so/page-002",
-            "created_time": "2024-01-05T11:00:00.000Z",
-            "last_edited_time": "2024-03-11T09:00:00.000Z",
-            "properties": {
-                "title": {"title": [{"plain_text": "Neural Networks"}]}
-            }
-        },
-        {
-            "id": "page-003",
-            "url": "https://notion.so/page-003",
-            "created_time": "2024-01-10T12:00:00.000Z",
-            "last_edited_time": "2024-03-12T14:00:00.000Z",
-            "properties": {
-                "title": {"title": [{"plain_text": "Python Tips"}]}
-            }
-        },
-        {
-            "id": "page-004",
-            "url": "https://notion.so/page-004",
-            "created_time": "2024-02-01T08:00:00.000Z",
-            "last_edited_time": "2024-03-13T10:00:00.000Z",
-            "properties": {
-                "title": {"title": [{"plain_text": "Deep Learning Research"}]}
-            }
-        },
-        {
-            "id": "page-005",
-            "url": "https://notion.so/page-005",
-            "created_time": "2024-02-15T09:00:00.000Z",
-            "last_edited_time": "2024-03-14T11:00:00.000Z",
-            "properties": {
-                "title": {"title": [{"plain_text": "Project Ideas"}]}
-            }
-        },
+"""
+services/notion_client.py — Updated to fetch pages from a submitted Notion URL.
+
+The user pastes a Notion URL like:
+  https://notion.so/My-Page-Title-abc123def456...
+  https://www.notion.so/workspace/Page-Title-<page_id>
+
+We extract the page ID and use the Notion API to:
+1. Get the root page metadata
+2. Search for all sub-pages linked from it
+3. Return them all as a flat list for graph building
+"""
+
+import os
+import re
+from notion_client import Client
+
+_notion_client = None
+
+
+def get_client() -> Client:
+    global _notion_client
+    if _notion_client is None:
+        token = os.getenv("NOTION_TOKEN")
+        if not token:
+            raise ValueError("NOTION_TOKEN environment variable not set")
+        _notion_client = Client(auth=token)
+    return _notion_client
+
+
+def extract_page_id_from_url(url: str) -> str:
+    """
+    Extract the 32-char page ID from various Notion URL formats.
+
+    Handles:
+      https://notion.so/Page-Title-abc123def456abc123def456abc123de
+      https://www.notion.so/workspace/Page-abc123def456abc123def456abc123de
+      https://notion.so/abc123def456abc123def456abc123de
+    """
+    # Try to find 32-char hex at end of URL path (with or without dashes)
+    patterns = [
+        r"([a-f0-9]{32})(?:\?|$|#)",          # plain 32-char hex
+        r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})",  # UUID format
+        r"-([a-f0-9]{32})(?:\?|$|#|$)",         # hex at end after dash
     ]
+    for pattern in patterns:
+        match = re.search(pattern, url.lower())
+        if match:
+            raw = match.group(1).replace("-", "")
+            # Format as UUID
+            return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+
+    raise ValueError(f"Could not extract page ID from URL: {url}")
 
 
-def get_page_blocks(page_id: str):
-    blocks = {
-        "page-001": [
-            {
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [
-                        {"plain_text": "ML is a subset of AI. See also ", "mention": {}},
-                        {"plain_text": "Neural Networks", "mention": {"type": "page", "page": {"id": "page-002"}}},
-                    ]
-                }
-            },
-            {
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"plain_text": "Supervised learning uses labeled data to train models. Common algorithms include linear regression, decision trees, and SVMs."}]
-                }
-            },
-        ],
-        "page-002": [
-            {
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [
-                        {"plain_text": "Neural networks are the backbone of "},
-                        {"plain_text": "Deep Learning", "mention": {"type": "page", "page": {"id": "page-004"}}},
-                    ]
-                }
-            },
-            {
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"plain_text": "Layers of neurons process data using weights and activation functions like ReLU and sigmoid. Backpropagation adjusts weights during training."}]
-                }
-            },
-        ],
-        "page-003": [
-            {
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"plain_text": "Use list comprehensions for cleaner Python code. Virtual environments keep dependencies isolated per project."}]
-                }
-            },
-        ],
-        "page-004": [
-            {
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [
-                        {"plain_text": "Deep learning research builds on "},
-                        {"plain_text": "Machine Learning Notes", "mention": {"type": "page", "page": {"id": "page-001"}}},
-                    ]
-                }
-            },
-            {
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"plain_text": "Transformers, CNNs, and RNNs are key deep learning architectures. GPU acceleration is essential for training large models efficiently."}]
-                }
-            },
-        ],
-        "page-005": [
-            {
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"plain_text": "Build an AI-powered note summarizer. Create a Python CLI tool for automating repetitive dev tasks."}]
-                }
-            },
-        ],
-    }
-    return blocks.get(page_id, [])
+def get_pages_from_url(url: str) -> list:
+    """
+    Main entry point: given a Notion page URL, return all related pages
+    (the root page + all sub-pages found via BFS through child pages).
+    """
+    client = get_client()
+    page_id = extract_page_id_from_url(url)
+
+    visited = set()
+    pages = []
+    queue = [page_id]
+
+    while queue:
+        pid = queue.pop(0)
+        if pid in visited:
+            continue
+        visited.add(pid)
+
+        try:
+            page = client.pages.retrieve(page_id=pid)
+            pages.append(page)
+
+            # Find child pages in blocks
+            child_pages = _get_child_page_ids(client, pid)
+            for child_id in child_pages:
+                if child_id not in visited:
+                    queue.append(child_id)
+
+        except Exception as e:
+            print(f"Warning: could not fetch page {pid}: {e}")
+            continue
+
+        # Limit to 30 pages to avoid rate limits
+        if len(pages) >= 30:
+            break
+
+    return pages
+
+
+def _get_child_page_ids(client: Client, page_id: str) -> list:
+    """Return list of child page IDs linked from blocks of a page."""
+    child_ids = []
+    try:
+        blocks = client.blocks.children.list(block_id=page_id).get("results", [])
+        for block in blocks:
+            btype = block.get("type", "")
+            if btype == "child_page":
+                child_ids.append(block["id"])
+            # Also check linked pages in rich text mentions
+            rich_texts = block.get(btype, {}).get("rich_text", [])
+            for rt in rich_texts:
+                mention = rt.get("mention", {})
+                if mention.get("type") == "page":
+                    child_ids.append(mention["page"]["id"])
+    except Exception as e:
+        print(f"Warning: could not get children of {page_id}: {e}")
+    return child_ids
+
+
+def get_page_blocks(page_id: str) -> list:
+    """Return all blocks of a page as a flat list."""
+    client = get_client()
+    try:
+        results = client.blocks.children.list(block_id=page_id).get("results", [])
+        return results
+    except Exception as e:
+        raise RuntimeError(f"Failed to get blocks for {page_id}: {e}")
+
+
+# ── Legacy: used for demo/dev mode ──
+def get_all_pages() -> list:
+    """
+    Returns all pages in the workspace (requires full integration access).
+    Not used in the main URL-based flow — kept for dev/testing.
+    """
+    client = get_client()
+    results = []
+    cursor = None
+    while True:
+        kwargs = {"filter": {"value": "page", "property": "object"}, "page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = client.search(**kwargs)
+        results.extend(resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    return results

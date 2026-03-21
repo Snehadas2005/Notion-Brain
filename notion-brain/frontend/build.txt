@@ -1,0 +1,103 @@
+﻿[36mvite v4.5.14 [32mbuilding for production...[36m[39m
+transforming...
+[32mΓ£ô[39m 16 modules transformed.
+[32mΓ£ô built in 1.33s[39m
+node.exe : 
+[31m[vite:esbuild] 
+Transform failed with 1 
+error:
+At C:\Program 
+Files\nodejs\npx.ps1:29 
+char:3
++   & $NODE_EXE $NPX_CLI_JS 
+$args
++   
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: ([31m[v  
+  ite:esbu...d with 1 erro   
+ r::String) [], RemoteExc    
+eption
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 
+C:/Users/Sneha 
+Das/Desktop/Gender Equality/n
+otion-brain/frontend/src/comp
+onents/NotionUniverse.jsx:119
+0:28: ERROR: Expected "(" 
+but found "!=="[39m
+file: [36mC:/Users/Sneha 
+Das/Desktop/Gender Equality/n
+otion-brain/frontend/src/comp
+onents/NotionUniverse.jsx:119
+0:28[39m
+[33m
+[33mExpected "(" but found 
+"!=="[33m
+1188|    const [apiError, 
+setApiError] = useState("");
+1189|  
+1190|    const API = typeof 
+import !== "undefined" && imp
+ort.meta?.env?.VITE_API_URL
+   |                         
+     ^
+1191|      ? 
+import.meta.env.VITE_API_URL
+1192|      : 
+"http://localhost:8000";
+[39m
+[31merror during build:
+Error: Transform failed with 
+1 error:
+C:/Users/Sneha 
+Das/Desktop/Gender Equality/n
+otion-brain/frontend/src/comp
+onents/NotionUniverse.jsx:119
+0:28: ERROR: Expected "(" 
+but found "!=="
+    at failureErrorWithLog 
+(C:\Users\Sneha 
+Das\Desktop\Gender Equality\n
+otion-brain\frontend\node_mod
+ules\esbuild\lib\main.js:1649
+:15)
+    at C:\Users\Sneha 
+Das\Desktop\Gender Equality\n
+otion-brain\frontend\node_mod
+ules\esbuild\lib\main.js:847:
+29
+    at 
+responseCallbacks.<computed> 
+(C:\Users\Sneha 
+Das\Desktop\Gender Equality\n
+otion-brain\frontend\node_mod
+ules\esbuild\lib\main.js:703:
+9)
+    at handleIncomingPacket 
+(C:\Users\Sneha 
+Das\Desktop\Gender Equality\n
+otion-brain\frontend\node_mod
+ules\esbuild\lib\main.js:762:
+9)
+    at Socket.readFromStdout 
+(C:\Users\Sneha 
+Das\Desktop\Gender Equality\n
+otion-brain\frontend\node_mod
+ules\esbuild\lib\main.js:679:
+7)
+    at Socket.emit 
+(node:events:518:28)
+    at addChunk (node:interna
+l/streams/readable:561:12)
+    at 
+readableAddChunkPushByteMode 
+(node:internal/streams/readab
+le:512:3)
+    at Readable.push (node:in
+ternal/streams/readable:392:5
+)
+    at Pipe.onStreamRead (nod
+e:internal/stream_base_common
+s:189:23)[39m
