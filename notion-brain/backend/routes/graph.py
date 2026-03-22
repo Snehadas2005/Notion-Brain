@@ -1,145 +1,202 @@
 """
-Backend: routes/graph.py — Updated for dynamic Notion URL input
-
-The frontend POSTs:
-  { "url": "https://notion.so/your-page-id" }
-
-And this returns a full graph with 3D positions.
+Backend: routes/graph.py
+Accepts POST { "token": "secret_xxx" }  ← frontend sends this
+Also accepts { "url": "..." }           ← backward compat
+No NOTION_TOKEN env var required.
 """
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from services.notion_client import get_pages_from_url, get_page_blocks
-from services.graph_builder import build_graph
-from services.ai_cluster import add_semantic_edges
+from typing import Optional
+from notion_client import Client
 import math
 
 router = APIRouter()
 
 
+# ── Accept both token and url fields so nothing 422s ───────────────────────
 class GraphRequest(BaseModel):
-    url: str
+    token: Optional[str] = None   # Notion Integration Token (new)
+    url:   Optional[str] = None   # kept for backward compat (ignored)
 
 
-def extract_text(blocks):
-    return " ".join(
-        rt["plain_text"]
-        for b in blocks
-        for rt in b.get(b.get("type", ""), {}).get("rich_text", [])
-    )
+# ── Per-request Notion client ───────────────────────────────────────────────
+def _notion(token: str) -> Client:
+    return Client(auth=token)
 
 
-def assign_3d_positions(nodes: list) -> list:
-    """
-    Arrange nodes in a circular/spiral layout in 3D space.
-    Nodes in the same cluster are grouped closer together.
-    """
-    # Group by cluster
-    clusters = {}
-    for n in nodes:
-        c = n.get("cluster", 0)
-        clusters.setdefault(c, []).append(n)
-
-    result = []
-    cluster_centers = {}
-    num_clusters = len(clusters)
-
-    # Place cluster centers in a ring
-    for i, cluster_id in enumerate(clusters.keys()):
-        angle = (i / num_clusters) * math.pi * 2
-        cx = math.cos(angle) * 16
-        cz = math.sin(angle) * 16
-        cy = (i % 3 - 1) * 4
-        cluster_centers[cluster_id] = (cx, cy, cz)
-
-    # Place nodes around their cluster center
-    for cluster_id, cluster_nodes in clusters.items():
-        cx, cy, cz = cluster_centers[cluster_id]
-        n = len(cluster_nodes)
-        for j, node in enumerate(cluster_nodes):
-            if n == 1:
-                node["position"] = [cx, cy, cz]
-            else:
-                angle = (j / n) * math.pi * 2
-                radius = 4 + (j % 2) * 2
-                node["position"] = [
-                    round(cx + math.cos(angle) * radius, 2),
-                    round(cy + math.sin(j * 1.3) * 2.5, 2),
-                    round(cz + math.sin(angle) * radius, 2),
-                ]
-            result.append(node)
-
-    return result
+def _extract_text(blocks: list) -> str:
+    parts = []
+    for b in blocks:
+        btype = b.get("type", "")
+        for rt in b.get(btype, {}).get("rich_text", []):
+            parts.append(rt.get("plain_text", ""))
+    return " ".join(parts)
 
 
-@router.post("/graph")
-async def get_graph_from_url(req: GraphRequest):
-    """
-    Main endpoint: accept a Notion page URL, build and return the knowledge graph.
-    """
+def _page_title(page: dict) -> str:
+    for key in ("title", "Name"):
+        prop  = page.get("properties", {}).get(key, {})
+        items = prop.get("title") or prop.get("rich_text") or []
+        if items:
+            t = items[0].get("plain_text", "")
+            if t:
+                return t
+    return "Untitled"
+
+
+def _get_blocks(client: Client, page_id: str) -> list:
     try:
-        pages = get_pages_from_url(req.url)
+        return client.blocks.children.list(block_id=page_id).get("results", [])
+    except Exception:
+        return []
+
+
+def _fetch_all_pages(client: Client, limit: int = 30) -> list:
+    results = []
+    cursor  = None
+    while len(results) < limit:
+        kwargs = {
+            "filter":    {"value": "page", "property": "object"},
+            "page_size": min(100, limit - len(results)),
+        }
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = client.search(**kwargs)
+        results.extend(resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    return results
+
+
+def _build_graph(pages: list, client: Client) -> dict:
+    node_ids = {p["id"] for p in pages}
+    nodes, links = [], []
+
+    for page in pages:
+        pid   = page["id"]
+        title = _page_title(page)
+        nodes.append({
+            "id":      pid,
+            "label":   title,
+            "url":     page.get("url", ""),
+            "edited":  page.get("last_edited_time", ""),
+        })
+        for b in _get_blocks(client, pid):
+            btype = b.get("type", "")
+            for rt in b.get(btype, {}).get("rich_text", []):
+                mention = rt.get("mention", {})
+                if mention.get("type") == "page":
+                    target = mention["page"]["id"]
+                    if target in node_ids:
+                        links.append({"source": pid, "target": target})
+
+    return {"nodes": nodes, "links": links}
+
+
+def _assign_positions(nodes: list) -> list:
+    n = len(nodes)
+    for i, node in enumerate(nodes):
+        if node.get("position"):
+            continue
+        angle = (i / max(n, 1)) * math.pi * 2
+        radius = 8 + (i % 4) * 3
+        node["position"] = [
+            round(math.cos(angle) * radius, 2),
+            round(math.sin(i * 1.3) * 3.5,  2),
+            round(math.sin(angle) * radius,  2),
+        ]
+        node["cluster"] = i % 5
+    return nodes
+
+
+def _add_semantic_edges(graph: dict, page_texts: dict, threshold: float = 0.72) -> dict:
+    try:
+        from sentence_transformers import SentenceTransformer
+        from sklearn.metrics.pairwise import cosine_similarity
+        ids = [i for i in page_texts if page_texts[i].strip()]
+        if len(ids) < 2:
+            return graph
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+        embs  = model.encode([page_texts[i] for i in ids], show_progress_bar=False)
+        sims  = cosine_similarity(embs)
+        exist = {(l["source"], l["target"]) for l in graph["links"]}
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                if sims[i][j] > threshold:
+                    pair = (ids[i], ids[j])
+                    if pair not in exist and (pair[1], pair[0]) not in exist:
+                        graph["links"].append({"source": ids[i], "target": ids[j], "semantic": True})
+    except Exception:
+        pass
+    return graph
+
+
+# ── Main POST endpoint ───────────────────────────────────────────────────────
+@router.post("/graph")
+async def post_graph(req: GraphRequest):
+    token = (req.token or "").strip()
+
+    if not token:
+        raise HTTPException(status_code=400, detail="Notion token is required. Send { \"token\": \"secret_...\" }")
+
+    if not (token.startswith("secret_") or token.startswith("ntn_")):
+        raise HTTPException(status_code=400, detail="Token must start with 'secret_' or 'ntn_'")
+
+    # Validate token with a lightweight API call
+    try:
+        client = _notion(token)
+        client.users.me()
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Notion API error: {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Invalid Notion token: {str(e)}")
+
+    # Fetch pages
+    try:
+        pages = _fetch_all_pages(client, limit=30)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch pages: {str(e)}")
 
     if not pages:
         return {"nodes": [], "links": []}
 
-    def fetch_blocks(pid):
-        try:
-            return get_page_blocks(pid)
-        except Exception:
-            return []
+    graph = _build_graph(pages, client)
 
-    graph = build_graph(pages, fetch_blocks)
-
-    # Collect page texts for AI clustering
+    # Semantic similarity edges (optional)
     page_texts = {}
     for page in pages:
         pid = page["id"]
-        blocks = fetch_blocks(pid)
-        page_texts[pid] = extract_text(blocks)
+        page_texts[pid] = _extract_text(_get_blocks(client, pid))
 
-    # Add semantic edges
-    try:
-        graph = add_semantic_edges(graph, page_texts)
-    except Exception:
-        pass
-
-    # Assign 3D positions
-    graph["nodes"] = assign_3d_positions(graph["nodes"])
+    graph = _add_semantic_edges(graph, page_texts)
+    graph["nodes"] = _assign_positions(graph["nodes"])
 
     return graph
 
 
-# ── Keep the old GET endpoint for backward compat ──
+# ── GET fallback ─────────────────────────────────────────────────────────────
 @router.get("/graph")
-async def get_graph_default():
-    """Fallback: returns empty graph. Use POST /graph with a URL instead."""
-    return {"nodes": [], "links": [],
-            "message": "POST to /api/graph with { url: 'notion_page_url' }"}
+async def get_graph_fallback():
+    return {
+        "nodes": [], "links": [],
+        "message": "POST to /api/graph with { \"token\": \"secret_...\" }"
+    }
 
 
-@router.get("/pages")
-async def get_pages():
-    raise HTTPException(status_code=400, detail="Use POST /api/graph with a Notion URL")
-
-
+# ── Page detail — token as query param ───────────────────────────────────────
 @router.get("/page/{page_id}")
-async def get_page_detail(page_id: str):
+async def get_page_detail(page_id: str, token: str = ""):
+    if not token:
+        return {"id": page_id, "content": ""}
     try:
-        blocks = get_page_blocks(page_id)
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Page not found: {str(e)}")
-
-    text = " ".join(
-        rt["plain_text"]
-        for b in blocks
-        for rt in b.get(b.get("type", ""), {}).get("rich_text", [])
-    )
-    return {"id": page_id, "content": text[:2000]}
+        client = _notion(token)
+        blocks = _get_blocks(client, page_id)
+        return {"id": page_id, "content": _extract_text(blocks)[:2000]}
+    except Exception:
+        return {"id": page_id, "content": ""}
 
 
+# ── Legacy search endpoint (404 redirect) ────────────────────────────────────
 @router.get("/search")
-async def search_pages(q: str = ""):
-    raise HTTPException(status_code=400, detail="Use POST /api/graph with a Notion URL")
+async def search_pages():
+    raise HTTPException(status_code=400, detail="Use POST /api/graph with { \"token\": \"secret_...\" }")
