@@ -4,7 +4,7 @@ from typing import Optional
 from notion_client import Client
 import math
 import os
-import google.generativeai as genai
+import httpx
 
 router = APIRouter()
 
@@ -15,7 +15,6 @@ class GraphRequest(BaseModel):
     token: Optional[str] = None
     url:   Optional[str] = None
 
-# Cache placeholder (User mentioned caching)
 _node_cache = {}
 
 def _notion(token: str) -> Client:
@@ -87,21 +86,20 @@ def _build_graph(pages: list, client: Client) -> dict:
         if links_count[pid] > 0:
             p = page_map[pid]
             final_nodes.append({
-                "id":      pid,
-                "label":   _page_title(p),
-                "url":     p.get("url", ""),
-                "edited":  p.get("last_edited_time", ""),
+                "id":    pid,
+                "label": _page_title(p),
+                "url":   p.get("url", ""),
+                "edited": p.get("last_edited_time", ""),
             })
-    
+
     valid_ids = {n["id"] for n in final_nodes}
     final_links = [l for l in links if l["source"] in valid_ids and l["target"] in valid_ids]
-
     return {"nodes": final_nodes, "links": final_links}
 
 def _assign_positions(nodes: list) -> list:
     n = len(nodes)
     for i, node in enumerate(nodes):
-        angle = (i / max(n, 1)) * math.pi * 2
+        angle  = (i / max(n, 1)) * math.pi * 2
         radius = 15 + (i % 4) * 5
         node["position"] = [
             round(math.cos(angle) * radius, 2),
@@ -111,54 +109,84 @@ def _assign_positions(nodes: list) -> list:
         node["cluster"] = i % 5
     return nodes
 
-def _summarize_with_ai(text: str) -> str:
-    # Use GEMINI_API_KEY from environment
-    api_key = os.getenv("GEMINI_API_KEY")
+# ─────────────────────────────────────────
+# FIXED: GEMINI API — uses httpx directly, no SDK needed
+# Tries multiple model names in order
+# ─────────────────────────────────────────
+async def _summarize_with_gemini_async(text: str) -> str:
+    api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key:
-        return text[:400] + "... [SYNC_ERROR: CONNECT_NOTION_AI_KEY]"
-    
-    try:
-        genai.configure(api_key=api_key)
-        
-        # Configuration as requested by USER
-        generation_config = {
-            "temperature": 2.0,      # High temperature for unique answers
-            "top_p": 0.95,
-            "top_k": 40,
-            "max_output_tokens": 5000, # Token limit 5000
-        }
-        
-        # Robust model selection to avoid 404 'not found' errors
-        model_names = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-3-flash"]
-        model = None
-        
-        for name in model_names:
+        return text[:400] + "... [GEMINI_KEY_NOT_SET — add GEMINI_API_KEY to .env]"
+
+    prompt = (
+        "You are the Notion Brain Intelligent Oracle. "
+        "Summarize the following structural data into a high-impact, concise overview. "
+        "Limit to 3 sentences maximum. Use architectural, professional language.\n\n"
+        f"DATA_FLOW:\n{text[:8000]}"
+    )
+
+    # Models to try in order (newest first)
+    models = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-1.0-pro",
+    ]
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for model in models:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/"
+                f"models/{model}:generateContent?key={api_key}"
+            )
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 500,
+                    "topP": 0.95,
+                },
+            }
             try:
-                model = genai.GenerativeModel(
-                    model_name=name,
-                    generation_config=generation_config
-                )
-                # Test the model with a tiny probe to verify it's available
-                # (Optional: If we want to be 100% sure we don't get a 404 later)
-                break 
-            except Exception:
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            result = parts[0].get("text", "").strip()
+                            if result:
+                                return result
+                elif resp.status_code == 404:
+                    # Model not found, try next
+                    continue
+                else:
+                    error_text = resp.text[:200]
+                    # Try next model on other errors too
+                    continue
+            except Exception as e:
                 continue
-        
-        if not model:
-            return f"[AI_INIT_FAILED] No valid Gemini model found. Content snippet: {text[:300]}"
-        
-        prompt = (
-            "You are the Notion Brain Intelligent Oracle. "
-            "Summarize the following structural data into a high-impact, concise overview. "
-            "Limit to 3 sentences maximum. Use architectural, professional language. "
-            f"DATA_FLOW:\n{text[:8000]}"
-        )
-        
-        response = model.generate_content(prompt)
-        return response.text.strip()
-            
+
+    return f"[ALL_GEMINI_MODELS_FAILED] Content snippet: {text[:300]}"
+
+
+def _summarize_with_gemini_sync(text: str) -> str:
+    """Synchronous wrapper — used in sync route handlers."""
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're inside an async context already — use nest_asyncio or thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, _summarize_with_gemini_async(text))
+                return future.result(timeout=35)
+        else:
+            return loop.run_until_complete(_summarize_with_gemini_async(text))
     except Exception as e:
-        return f"[AI_SYNC_FAILED: {str(e)}] " + text[:300]
+        return f"[GEMINI_WRAPPER_ERROR: {str(e)}] {text[:200]}"
+
 
 # ─────────────────────────────────────────
 # ENDPOINTS
@@ -171,35 +199,33 @@ async def post_graph(req: GraphRequest):
         raise HTTPException(status_code=400, detail="TOKEN_MISSING")
     try:
         client = _notion(token)
-        pages = _fetch_all_pages(client, limit=40)
-        graph = _build_graph(pages, client)
+        pages  = _fetch_all_pages(client, limit=40)
+        graph  = _build_graph(pages, client)
         graph["nodes"] = _assign_positions(graph["nodes"])
         return graph
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GRAPH_ERROR: {str(e)}")
 
+
 @router.get("/page/{page_id}")
 async def get_page_detail(page_id: str, token: str = ""):
     if not token:
         return {"id": page_id, "content": "AUTH_REQUIRED"}
-    
-    # Caching check
+
     if page_id in _node_cache:
         return {"id": page_id, "content": _node_cache[page_id]}
 
     try:
-        client = _notion(token)
-        blocks = _get_blocks(client, page_id)
+        client  = _notion(token)
+        blocks  = _get_blocks(client, page_id)
         raw_text = _extract_text(blocks)
-        
+
         if not raw_text.strip():
             return {"id": page_id, "content": "NODE_IS_EMPTY"}
-            
-        summary = _summarize_with_ai(raw_text)
-        
-        # Populate cache
+
+        summary = await _summarize_with_gemini_async(raw_text)
         _node_cache[page_id] = summary
-        
         return {"id": page_id, "content": summary}
+
     except Exception as e:
         return {"id": page_id, "content": f"RETRIEVAL_ERROR: {str(e)}"}
