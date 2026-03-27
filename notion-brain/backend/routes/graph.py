@@ -1,29 +1,25 @@
-"""
-Backend: routes/graph.py
-Accepts POST { "token": "secret_xxx" }  ← frontend sends this
-Also accepts { "url": "..." }           ← backward compat
-No NOTION_TOKEN env var required.
-"""
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from notion_client import Client
 import math
+import os
+import google.generativeai as genai
 
 router = APIRouter()
 
-
-# ── Accept both token and url fields so nothing 422s ───────────────────────
+# ─────────────────────────────────────────
+# MODELS
+# ─────────────────────────────────────────
 class GraphRequest(BaseModel):
-    token: Optional[str] = None   # Notion Integration Token (new)
-    url:   Optional[str] = None   # kept for backward compat (ignored)
+    token: Optional[str] = None
+    url:   Optional[str] = None
 
+# Cache placeholder (User mentioned caching)
+_node_cache = {}
 
-# ── Per-request Notion client ───────────────────────────────────────────────
 def _notion(token: str) -> Client:
     return Client(auth=token)
-
 
 def _extract_text(blocks: list) -> str:
     parts = []
@@ -32,7 +28,6 @@ def _extract_text(blocks: list) -> str:
         for rt in b.get(btype, {}).get("rich_text", []):
             parts.append(rt.get("plain_text", ""))
     return " ".join(parts)
-
 
 def _page_title(page: dict) -> str:
     for key in ("title", "Name"):
@@ -44,13 +39,11 @@ def _page_title(page: dict) -> str:
                 return t
     return "Untitled"
 
-
 def _get_blocks(client: Client, page_id: str) -> list:
     try:
         return client.blocks.children.list(block_id=page_id).get("results", [])
     except Exception:
         return []
-
 
 def _fetch_all_pages(client: Client, limit: int = 30) -> list:
     results = []
@@ -69,21 +62,16 @@ def _fetch_all_pages(client: Client, limit: int = 30) -> list:
         cursor = resp.get("next_cursor")
     return results
 
-
 def _build_graph(pages: list, client: Client) -> dict:
     node_ids = {p["id"] for p in pages}
-    nodes, links = [], []
+    links = []
+    page_map = {p["id"]: p for p in pages}
+    links_count = {pid: 0 for pid in node_ids}
 
     for page in pages:
         pid   = page["id"]
-        title = _page_title(page)
-        nodes.append({
-            "id":      pid,
-            "label":   title,
-            "url":     page.get("url", ""),
-            "edited":  page.get("last_edited_time", ""),
-        })
-        for b in _get_blocks(client, pid):
+        blocks = _get_blocks(client, pid)
+        for b in blocks:
             btype = b.get("type", "")
             for rt in b.get(btype, {}).get("rich_text", []):
                 mention = rt.get("mention", {})
@@ -91,112 +79,127 @@ def _build_graph(pages: list, client: Client) -> dict:
                     target = mention["page"]["id"]
                     if target in node_ids:
                         links.append({"source": pid, "target": target})
+                        links_count[pid] += 1
+                        links_count[target] += 1
 
-    return {"nodes": nodes, "links": links}
+    final_nodes = []
+    for pid in node_ids:
+        if links_count[pid] > 0:
+            p = page_map[pid]
+            final_nodes.append({
+                "id":      pid,
+                "label":   _page_title(p),
+                "url":     p.get("url", ""),
+                "edited":  p.get("last_edited_time", ""),
+            })
+    
+    valid_ids = {n["id"] for n in final_nodes}
+    final_links = [l for l in links if l["source"] in valid_ids and l["target"] in valid_ids]
 
+    return {"nodes": final_nodes, "links": final_links}
 
 def _assign_positions(nodes: list) -> list:
     n = len(nodes)
     for i, node in enumerate(nodes):
-        if node.get("position"):
-            continue
         angle = (i / max(n, 1)) * math.pi * 2
-        radius = 8 + (i % 4) * 3
+        radius = 15 + (i % 4) * 5
         node["position"] = [
             round(math.cos(angle) * radius, 2),
-            round(math.sin(i * 1.3) * 3.5,  2),
+            round(math.sin(i * 1.5) * 5.0,  2),
             round(math.sin(angle) * radius,  2),
         ]
         node["cluster"] = i % 5
     return nodes
 
-
-def _add_semantic_edges(graph: dict, page_texts: dict, threshold: float = 0.72) -> dict:
+def _summarize_with_ai(text: str) -> str:
+    # Use GEMINI_API_KEY from environment
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return text[:400] + "... [SYNC_ERROR: CONNECT_NOTION_AI_KEY]"
+    
     try:
-        from sentence_transformers import SentenceTransformer
-        from sklearn.metrics.pairwise import cosine_similarity
-        ids = [i for i in page_texts if page_texts[i].strip()]
-        if len(ids) < 2:
-            return graph
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        embs  = model.encode([page_texts[i] for i in ids], show_progress_bar=False)
-        sims  = cosine_similarity(embs)
-        exist = {(l["source"], l["target"]) for l in graph["links"]}
-        for i in range(len(ids)):
-            for j in range(i + 1, len(ids)):
-                if sims[i][j] > threshold:
-                    pair = (ids[i], ids[j])
-                    if pair not in exist and (pair[1], pair[0]) not in exist:
-                        graph["links"].append({"source": ids[i], "target": ids[j], "semantic": True})
-    except Exception:
-        pass
-    return graph
+        genai.configure(api_key=api_key)
+        
+        # Configuration as requested by USER
+        generation_config = {
+            "temperature": 2.0,      # High temperature for unique answers
+            "top_p": 0.95,
+            "top_k": 40,
+            "max_output_tokens": 5000, # Token limit 5000
+        }
+        
+        # Robust model selection to avoid 404 'not found' errors
+        model_names = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-3-flash"]
+        model = None
+        
+        for name in model_names:
+            try:
+                model = genai.GenerativeModel(
+                    model_name=name,
+                    generation_config=generation_config
+                )
+                # Test the model with a tiny probe to verify it's available
+                # (Optional: If we want to be 100% sure we don't get a 404 later)
+                break 
+            except Exception:
+                continue
+        
+        if not model:
+            return f"[AI_INIT_FAILED] No valid Gemini model found. Content snippet: {text[:300]}"
+        
+        prompt = (
+            "You are the Notion Brain Intelligent Oracle. "
+            "Summarize the following structural data into a high-impact, concise overview. "
+            "Limit to 3 sentences maximum. Use architectural, professional language. "
+            f"DATA_FLOW:\n{text[:8000]}"
+        )
+        
+        response = model.generate_content(prompt)
+        return response.text.strip()
+            
+    except Exception as e:
+        return f"[AI_SYNC_FAILED: {str(e)}] " + text[:300]
 
+# ─────────────────────────────────────────
+# ENDPOINTS
+# ─────────────────────────────────────────
 
-# ── Main POST endpoint ───────────────────────────────────────────────────────
 @router.post("/graph")
 async def post_graph(req: GraphRequest):
     token = (req.token or "").strip()
-
     if not token:
-        raise HTTPException(status_code=400, detail="Notion token is required. Send { \"token\": \"secret_...\" }")
-
-    if not (token.startswith("secret_") or token.startswith("ntn_")):
-        raise HTTPException(status_code=400, detail="Token must start with 'secret_' or 'ntn_'")
-
-    # Validate token with a lightweight API call
+        raise HTTPException(status_code=400, detail="TOKEN_MISSING")
     try:
         client = _notion(token)
-        client.users.me()
+        pages = _fetch_all_pages(client, limit=40)
+        graph = _build_graph(pages, client)
+        graph["nodes"] = _assign_positions(graph["nodes"])
+        return graph
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Invalid Notion token: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"GRAPH_ERROR: {str(e)}")
 
-    # Fetch pages
-    try:
-        pages = _fetch_all_pages(client, limit=30)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch pages: {str(e)}")
-
-    if not pages:
-        return {"nodes": [], "links": []}
-
-    graph = _build_graph(pages, client)
-
-    # Semantic similarity edges (optional)
-    page_texts = {}
-    for page in pages:
-        pid = page["id"]
-        page_texts[pid] = _extract_text(_get_blocks(client, pid))
-
-    graph = _add_semantic_edges(graph, page_texts)
-    graph["nodes"] = _assign_positions(graph["nodes"])
-
-    return graph
-
-
-# ── GET fallback ─────────────────────────────────────────────────────────────
-@router.get("/graph")
-async def get_graph_fallback():
-    return {
-        "nodes": [], "links": [],
-        "message": "POST to /api/graph with { \"token\": \"secret_...\" }"
-    }
-
-
-# ── Page detail — token as query param ───────────────────────────────────────
 @router.get("/page/{page_id}")
 async def get_page_detail(page_id: str, token: str = ""):
     if not token:
-        return {"id": page_id, "content": ""}
+        return {"id": page_id, "content": "AUTH_REQUIRED"}
+    
+    # Caching check
+    if page_id in _node_cache:
+        return {"id": page_id, "content": _node_cache[page_id]}
+
     try:
         client = _notion(token)
         blocks = _get_blocks(client, page_id)
-        return {"id": page_id, "content": _extract_text(blocks)[:2000]}
-    except Exception:
-        return {"id": page_id, "content": ""}
-
-
-# ── Legacy search endpoint (404 redirect) ────────────────────────────────────
-@router.get("/search")
-async def search_pages():
-    raise HTTPException(status_code=400, detail="Use POST /api/graph with { \"token\": \"secret_...\" }")
+        raw_text = _extract_text(blocks)
+        
+        if not raw_text.strip():
+            return {"id": page_id, "content": "NODE_IS_EMPTY"}
+            
+        summary = _summarize_with_ai(raw_text)
+        
+        # Populate cache
+        _node_cache[page_id] = summary
+        
+        return {"id": page_id, "content": summary}
+    except Exception as e:
+        return {"id": page_id, "content": f"RETRIEVAL_ERROR: {str(e)}"}

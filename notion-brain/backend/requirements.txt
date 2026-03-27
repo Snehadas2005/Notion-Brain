@@ -8,3 +8,4 @@ httpx
 numpy
 sentence-transformers
 scikit-learn
+google-generativeai
