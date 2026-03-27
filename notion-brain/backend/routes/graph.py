@@ -20,13 +20,63 @@ _node_cache = {}
 def _notion(token: str) -> Client:
     return Client(auth=token)
 
-def _extract_text(blocks: list) -> str:
+def _extract_text_deep(blocks: list, client: Client, depth: int = 0) -> str:
+    """Recursively extract ALL text from blocks including nested children."""
     parts = []
+    if depth > 3:  # Limit recursion depth
+        return ""
+    
     for b in blocks:
         btype = b.get("type", "")
-        for rt in b.get(btype, {}).get("rich_text", []):
-            parts.append(rt.get("plain_text", ""))
-    return " ".join(parts)
+        
+        # Extract rich text from this block
+        block_data = b.get(btype, {})
+        for rt in block_data.get("rich_text", []):
+            text = rt.get("plain_text", "").strip()
+            if text:
+                parts.append(text)
+        
+        # Handle special block types
+        if btype == "child_page":
+            title = b.get("child_page", {}).get("title", "")
+            if title:
+                parts.append(f"[Page: {title}]")
+        
+        if btype in ("bulleted_list_item", "numbered_list_item", "to_do"):
+            for rt in block_data.get("rich_text", []):
+                text = rt.get("plain_text", "").strip()
+                if text:
+                    parts.append(f"• {text}")
+        
+        if btype == "heading_1" or btype == "heading_2" or btype == "heading_3":
+            for rt in block_data.get("rich_text", []):
+                text = rt.get("plain_text", "").strip()
+                if text:
+                    parts.append(f"\n## {text}")
+        
+        if btype == "callout":
+            for rt in block_data.get("rich_text", []):
+                text = rt.get("plain_text", "").strip()
+                if text:
+                    parts.append(f"[!] {text}")
+        
+        if btype == "quote":
+            for rt in block_data.get("rich_text", []):
+                text = rt.get("plain_text", "").strip()
+                if text:
+                    parts.append(f"> {text}")
+        
+        # Recurse into children if block has them
+        if b.get("has_children") and client and depth < 3:
+            try:
+                child_blocks = client.blocks.children.list(block_id=b["id"]).get("results", [])
+                child_text = _extract_text_deep(child_blocks, client, depth + 1)
+                if child_text:
+                    parts.append(child_text)
+            except Exception:
+                pass
+    
+    return "\n".join(filter(None, parts))
 
 def _page_title(page: dict) -> str:
     for key in ("title", "Name"):
@@ -40,11 +90,22 @@ def _page_title(page: dict) -> str:
 
 def _get_blocks(client: Client, page_id: str) -> list:
     try:
-        return client.blocks.children.list(block_id=page_id).get("results", [])
+        results = []
+        cursor = None
+        while True:
+            kwargs = {"block_id": page_id, "page_size": 100}
+            if cursor:
+                kwargs["start_cursor"] = cursor
+            resp = client.blocks.children.list(**kwargs)
+            results.extend(resp.get("results", []))
+            if not resp.get("has_more"):
+                break
+            cursor = resp.get("next_cursor")
+        return results
     except Exception:
         return []
 
-def _fetch_all_pages(client: Client, limit: int = 30) -> list:
+def _fetch_all_pages(client: Client, limit: int = 40) -> list:
     results = []
     cursor  = None
     while len(results) < limit:
@@ -72,6 +133,14 @@ def _build_graph(pages: list, client: Client) -> dict:
         blocks = _get_blocks(client, pid)
         for b in blocks:
             btype = b.get("type", "")
+            # Check for child_page blocks
+            if btype == "child_page":
+                target = b.get("id")
+                if target in node_ids and target != pid:
+                    links.append({"source": pid, "target": target})
+                    links_count[pid] += 1
+                    links_count[target] += 1
+            # Check for mention links in rich text
             for rt in b.get(btype, {}).get("rich_text", []):
                 mention = rt.get("mention", {})
                 if mention.get("type") == "page":
@@ -81,16 +150,16 @@ def _build_graph(pages: list, client: Client) -> dict:
                         links_count[pid] += 1
                         links_count[target] += 1
 
+    # Include ALL nodes (not just connected ones — small workspaces may have isolated pages)
     final_nodes = []
     for pid in node_ids:
-        if links_count[pid] > 0:
-            p = page_map[pid]
-            final_nodes.append({
-                "id":    pid,
-                "label": _page_title(p),
-                "url":   p.get("url", ""),
-                "edited": p.get("last_edited_time", ""),
-            })
+        p = page_map[pid]
+        final_nodes.append({
+            "id":    pid,
+            "label": _page_title(p),
+            "url":   p.get("url", ""),
+            "edited": p.get("last_edited_time", ""),
+        })
 
     valid_ids = {n["id"] for n in final_nodes}
     final_links = [l for l in links if l["source"] in valid_ids and l["target"] in valid_ids]
@@ -110,22 +179,31 @@ def _assign_positions(nodes: list) -> list:
     return nodes
 
 # ─────────────────────────────────────────
-# FIXED: GEMINI API — uses httpx directly, no SDK needed
-# Tries multiple model names in order
+# GEMINI API — Uses GEMINI_API_KEY from .env
+# Tries multiple models, extracts full page content first
 # ─────────────────────────────────────────
-async def _summarize_with_gemini_async(text: str) -> str:
-    api_key = os.getenv("GEMINI_API_KEY", "")
+async def _summarize_with_gemini_async(text: str, page_title: str = "") -> str:
+    """
+    Summarize page content using Gemini API from .env GEMINI_API_KEY.
+    Returns a rich, structured summary.
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
-        return text[:400] + "... [GEMINI_KEY_NOT_SET — add GEMINI_API_KEY to .env]"
+        return f"[CONFIG_ERROR] GEMINI_API_KEY not set in .env — add it to enable AI summaries.\n\nRaw content:\n{text[:500]}"
+
+    if not text or not text.strip():
+        return "[EMPTY_PAGE] This page has no content yet."
 
     prompt = (
-        "You are the Notion Brain Intelligent Oracle. "
-        "Summarize the following structural data into a high-impact, concise overview. "
-        "Limit to 3 sentences maximum. Use architectural, professional language.\n\n"
-        f"DATA_FLOW:\n{text[:8000]}"
+        f"You are analyzing a Notion page titled: '{page_title}'\n\n"
+        "Provide a structured, intelligent summary of the following content. "
+        "Format your response as:\n"
+        "📌 OVERVIEW: [2-3 sentence summary of what this page is about]\n"
+        "🔑 KEY POINTS: [3-5 bullet points of the most important information]\n"
+        "🏷️ CATEGORY: [single word or short phrase describing the page type, e.g. 'Project Plan', 'Meeting Notes', 'Research']\n\n"
+        f"PAGE CONTENT:\n{text[:10000]}"
     )
 
-    # Models to try in order (newest first)
     models = [
         "gemini-2.0-flash",
         "gemini-1.5-flash-latest",
@@ -133,7 +211,7 @@ async def _summarize_with_gemini_async(text: str) -> str:
         "gemini-1.0-pro",
     ]
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=45.0) as client:
         for model in models:
             url = (
                 f"https://generativelanguage.googleapis.com/v1beta/"
@@ -142,8 +220,8 @@ async def _summarize_with_gemini_async(text: str) -> str:
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
-                    "temperature": 0.7,
-                    "maxOutputTokens": 500,
+                    "temperature": 0.4,
+                    "maxOutputTokens": 800,
                     "topP": 0.95,
                 },
             }
@@ -158,34 +236,22 @@ async def _summarize_with_gemini_async(text: str) -> str:
                             result = parts[0].get("text", "").strip()
                             if result:
                                 return result
+                elif resp.status_code == 400:
+                    # Bad request — log and try next
+                    error_detail = resp.json().get("error", {}).get("message", "Unknown error")
+                    print(f"[GEMINI] Model {model} 400 error: {error_detail}")
+                    continue
                 elif resp.status_code == 404:
-                    # Model not found, try next
+                    print(f"[GEMINI] Model {model} not found, trying next...")
                     continue
                 else:
-                    error_text = resp.text[:200]
-                    # Try next model on other errors too
+                    print(f"[GEMINI] Model {model} returned {resp.status_code}: {resp.text[:200]}")
                     continue
             except Exception as e:
+                print(f"[GEMINI] Exception with model {model}: {str(e)}")
                 continue
 
-    return f"[ALL_GEMINI_MODELS_FAILED] Content snippet: {text[:300]}"
-
-
-def _summarize_with_gemini_sync(text: str) -> str:
-    """Synchronous wrapper — used in sync route handlers."""
-    import asyncio
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # We're inside an async context already — use nest_asyncio or thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, _summarize_with_gemini_async(text))
-                return future.result(timeout=35)
-        else:
-            return loop.run_until_complete(_summarize_with_gemini_async(text))
-    except Exception as e:
-        return f"[GEMINI_WRAPPER_ERROR: {str(e)}] {text[:200]}"
+    return f"[GEMINI_FAILED] All models exhausted. Raw content preview:\n{text[:400]}"
 
 
 # ─────────────────────────────────────────
@@ -209,23 +275,47 @@ async def post_graph(req: GraphRequest):
 
 @router.get("/page/{page_id}")
 async def get_page_detail(page_id: str, token: str = ""):
+    """
+    Fetch full page content from Notion and summarize with Gemini.
+    The token is the user's Notion integration token.
+    """
     if not token:
-        return {"id": page_id, "content": "AUTH_REQUIRED"}
+        return {"id": page_id, "content": "AUTH_REQUIRED — pass ?token=secret_xxx"}
 
-    if page_id in _node_cache:
-        return {"id": page_id, "content": _node_cache[page_id]}
+    cache_key = f"{page_id}:{token[:8]}"
+    if cache_key in _node_cache:
+        return {"id": page_id, "content": _node_cache[cache_key]}
 
     try:
-        client  = _notion(token)
-        blocks  = _get_blocks(client, page_id)
-        raw_text = _extract_text(blocks)
-
+        client = _notion(token)
+        
+        # 1. Get page metadata (title)
+        try:
+            page_meta = client.pages.retrieve(page_id=page_id)
+            page_title = _page_title(page_meta)
+        except Exception:
+            page_title = "Untitled Page"
+        
+        # 2. Get ALL blocks with full recursion
+        blocks = _get_blocks(client, page_id)
+        if not blocks:
+            return {"id": page_id, "content": "[EMPTY_PAGE] This Notion page has no content."}
+        
+        # 3. Deep extract all text content
+        raw_text = _extract_text_deep(blocks, client, depth=0)
+        
         if not raw_text.strip():
-            return {"id": page_id, "content": "NODE_IS_EMPTY"}
+            return {"id": page_id, "content": "[EMPTY_PAGE] Page exists but contains no readable text."}
 
-        summary = await _summarize_with_gemini_async(raw_text)
-        _node_cache[page_id] = summary
+        # 4. Summarize with Gemini using .env API key
+        summary = await _summarize_with_gemini_async(raw_text, page_title)
+        
+        # Cache the result
+        _node_cache[cache_key] = summary
         return {"id": page_id, "content": summary}
 
     except Exception as e:
-        return {"id": page_id, "content": f"RETRIEVAL_ERROR: {str(e)}"}
+        error_msg = str(e)
+        if "Could not find page" in error_msg or "unauthorized" in error_msg.lower():
+            return {"id": page_id, "content": f"[ACCESS_DENIED] Make sure your Notion integration has access to this page."}
+        return {"id": page_id, "content": f"[RETRIEVAL_ERROR] {error_msg[:200]}"}
