@@ -329,7 +329,7 @@ def _blocks_to_markdown(blocks: list, client: Client, depth: int = 0) -> str:
             row_text = " | ".join(_rich_text_to_md(cell) for cell in cells)
             lines.append(f"| {row_text} |")
 
-        if b.get("has_children") and client:
+        if b.get("has_children") and client and depth < 2:
             try:
                 child_resp = client.blocks.children.list(block_id=b["id"])
                 child_blocks = _extract_results(child_resp)
@@ -742,7 +742,7 @@ async def get_page_detail(page_id: str, token: str = ""):
             timeout=NOTION_CALL_TIMEOUT
         )
     except (asyncio.TimeoutError, Exception) as e:
-        print(f"[MARKDOWN] Error: {e}")
+        print(f"[MARKDOWN] Timeout or Parse Error: {repr(e)}")
         raw_md = ""
 
     if not raw_md.strip():
