@@ -109,11 +109,11 @@ export default function WorldBackground({ active }) {
       ctx.strokeStyle = blue(0.7 * a); ctx.stroke();
 
       // ── 3. Construction circles ─────────────────────────────────
-      // R1 – partial ink arc
+      // R1 – full ink circle
       ctx.strokeStyle = ink(0.13 * a);
       ctx.lineWidth = 0.9;
       ctx.beginPath();
-      ctx.arc(CX, CY, R1, -Math.PI * 0.65, Math.PI * 1.15);
+      ctx.arc(CX, CY, R1, 0, Math.PI * 2);
       ctx.stroke();
 
       // R2 – blue dashed

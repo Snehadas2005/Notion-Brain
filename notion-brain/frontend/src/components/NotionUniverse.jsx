@@ -7,6 +7,7 @@ import * as THREE from "three";
 import gsap from "gsap";
 import { motion, AnimatePresence } from "framer-motion";
 import WorldBackground from "./WorldBackground";
+import MarkdownRenderer from "./MarkdownRenderer";
 
 // ─────────────────────────────────────────
 // ENV
@@ -276,23 +277,34 @@ function HeroGrid({ onSubmit }) {
             transition={{ duration: 0.8, delay: 0.2 }}
             style={{ fontSize: "32px", lineHeight: "1.1", maxWidth: "450px", fontWeight: 500, letterSpacing: "-0.01em" }}
           >
-            The Notion MCP Challenge. Centralizing workflow with AI-powered docs, projects, and notes.
+            Notion Brain. Centralizing your workflow by visually mapping your docs, projects, and notes into an interactive 3D universe.
           </motion.h2>
         </div>
         <div style={{ padding: "40px", borderRight: "1px solid rgba(0,0,0,0.08)", fontSize: "11px", letterSpacing: "1.5px", lineHeight: "1.8" }}>
           <div style={{ color: "#999", marginBottom: "8px", fontWeight: 700 }}>SYSTEM_ORACLE:</div>
-          <div>POWERED BY <span style={{ textDecoration: "underline" }}>NOTION MCP ENGINE</span> //</div>
+          <div>POWERED BY <span style={{ textDecoration: "underline" }}>NOTION API</span> //</div>
           <div>SUMMARIZING NODES <span style={{ textDecoration: "underline" }}>STRUCTURALLY</span></div>
-          <div style={{ marginTop: "16px", color: "#999" }}>AI_ENGINE: <span style={{ color: "#000" }}>GEMINI_2.0_FLASH</span></div>
+          <div style={{ marginTop: "16px", color: "#999" }}>AI_ENGINE: <span style={{ color: "#000" }}>ACTIVE</span></div>
         </div>
         <div style={{ padding: "40px", fontSize: "11px", letterSpacing: "2px" }}>
-          <div style={{ color: "#999", marginBottom: "8px" }}>2026 // EST</div>
-          <button onClick={() => onSubmit("DEMO")}
-            style={{ background: "none", border: "none", borderBottom: "1.5px solid #000",
-              cursor: "pointer", fontSize: "11px", letterSpacing: "2px", fontWeight: 700,
-              padding: "2px 0", transition: "opacity 0.2s" }}>
-            INITIALIZE_DEMO_INSTANCE_
-          </button>
+          <div style={{ color: "#999", marginBottom: "12px" }}>2026 // EST</div>
+          <div style={{ color: "#666" }}>
+            DEVELOPED BY{" "}
+            <a
+              href="https://github.com/Snehadas2005"
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                color: "#000",
+                textDecoration: "none",
+                fontWeight: 700,
+                borderBottom: "1.5px solid #000",
+                paddingBottom: "1px"
+              }}
+            >
+              SNEHA DAS
+            </a>
+          </div>
         </div>
       </div>
       <div style={{ height: "140px", borderTop: "1px solid rgba(0,0,0,0.08)", display: "flex" }}>
@@ -478,31 +490,6 @@ function NodeBlock({ node, isSelected, onNodeClick, assemblyDelay }) {
 }
 
 // ─────────────────────────────────────────
-// DEMO DATA
-// ─────────────────────────────────────────
-const DEMO_DATA = {
-  nodes: [
-    { id: "1", label: "NOTION_MCP_CHALLENGE", position: [0, 0, 0], edited: new Date().toISOString() },
-    { id: "2", label: "PRIZES_AND_BADGES", position: [15, 8, -5], edited: new Date().toISOString() },
-    { id: "3", label: "JUDGING_CRITERIA", position: [-15, -8, 10], edited: new Date().toISOString() },
-    { id: "4", label: "SUBMISSION_TEMPLATES", position: [8, -15, -12], edited: new Date().toISOString() },
-    { id: "5", label: "HACKATHON_TEAM_HUB", position: [-10, 12, 15], edited: new Date().toISOString() },
-  ],
-  links: [
-    { source: "1", target: "2" }, { source: "1", target: "3" },
-    { source: "1", target: "4" }, { source: "1", target: "5" },
-  ],
-};
-
-const DEMO_CONTENT = {
-  "1": `📌 OVERVIEW: The Notion MCP Challenge is a hackathon in partnership with Major League Hacking and Notion, running through March 29. Participants are invited to centralize their workflow with AI-powered docs, projects, and notes using the Model Context Protocol.\n\n🔑 KEY POINTS:\n• Build tools that integrate with Notion's MCP engine\n• Judged on Originality, Technical Complexity, and Practical Implementation\n• Winner receives an invitation to chat with Ivan Zhao (CEO) + $500 USD\n• Submissions are due March 29, 2026\n• Open to all MLH hackathon participants\n\n🏷️ CATEGORY: Hackathon Brief`,
-  "2": `📌 OVERVIEW: The prizes and badges section outlines rewards for top submissions. The grand prize includes a direct meeting with Notion CEO Ivan Zhao, $500 USD cash, and exclusive Notion swag.\n\n🔑 KEY POINTS:\n• 1st place: Chat with Ivan Zhao + $500 USD\n• MLH digital badges for all finalists\n• Special Notion Pro subscriptions for runners-up\n\n🏷️ CATEGORY: Prizes`,
-  "3": `📌 OVERVIEW: Submissions are evaluated across three core dimensions by a panel of Notion engineers and MLH judges.\n\n🔑 KEY POINTS:\n• Originality & Creativity — does it push boundaries?\n• Technical Complexity — how sophisticated is the implementation?\n• Practical Implementation — is it actually useful?\n\n🏷️ CATEGORY: Judging Criteria`,
-  "4": `📌 OVERVIEW: Submission templates provide standardized formats for project documentation, demo videos, and code repositories.\n\n🔑 KEY POINTS:\n• README template with required sections\n• Demo video under 3 minutes\n• GitHub repo must be public by deadline\n• Include a live demo URL if possible\n\n🏷️ CATEGORY: Templates`,
-  "5": `📌 OVERVIEW: The Hackathon Team Hub is a collaborative Notion workspace where participants coordinate, share resources, and connect with mentors.\n\n🔑 KEY POINTS:\n• Team formation board\n• Mentor office hours schedule\n• Shared resource library\n• Real-time Q&A channel integration\n\n🏷️ CATEGORY: Team Hub`,
-};
-
-// ─────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────
 export default function App() {
@@ -511,28 +498,19 @@ export default function App() {
   const [selectedNode, setSelectedNode] = useState(null);
   const [token, setToken] = useState("");
   const [nodeContent, setNodeContent] = useState("");
+  const [rawContent, setRawContent] = useState("");
+  const [isRaw, setIsRaw] = useState(false);
+  const [viewMode, setViewMode] = useState("summary");
   const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState("");
-  const [isDemoMode, setIsDemoMode] = useState(false);
 
-  // ── Connect / Demo handler ─────────────────────────────────────────
+  // ── Connect handler ─────────────────────────────────────────
   const handleSubmit = useCallback(async (customToken) => {
-    if (customToken === "DEMO") {
-      setIsDemoMode(true);
-      setPhase("loading");
-      setTimeout(() => {
-        setData(DEMO_DATA);
-        setPhase("world");
-      }, 1800);
-      return;
-    }
-
     if (!customToken.trim()) {
       setError("TOKEN_EMPTY — please enter your Notion integration secret");
       return;
     }
 
-    setIsDemoMode(false);
     setToken(customToken);
     setPhase("loading");
     setError("");
@@ -556,30 +534,27 @@ export default function App() {
     }
   }, []);
 
-  // ── Node click → fetch full content from backend → Gemini summary ──
+  // ── Node click → fetch full content from backend → AI summary ──
   const fetchDetail = useCallback(async (node) => {
     setSelectedNode(node);
     setNodeContent("");
     setLoadingContent(true);
 
-    // Demo mode uses local content
-    if (isDemoMode) {
-      await new Promise(r => setTimeout(r, 600));
-      setNodeContent(DEMO_CONTENT[node.id] || `📌 OVERVIEW: Demo node "${node.label}".\n\n🔑 KEY POINTS:\n• This is a demo workspace\n• Connect your real Notion token for live summaries\n\n🏷️ CATEGORY: Demo`);
-      setLoadingContent(false);
-      return;
-    }
-
     try {
-      // Backend handles: Notion full content fetch → Gemini summarization via .env key
+      // Backend handles: Notion full content fetch → AI summarization
       const resp = await fetch(`${API_BASE}/api/page/${node.id}?token=${encodeURIComponent(token)}`);
       const d = await resp.json();
       setNodeContent(d.content || "[EMPTY_PAGE] No content found.");
+      setRawContent(d.raw_content || d.content || "");
+      setIsRaw(d.is_raw || false);
+      setViewMode(d.is_raw ? "raw" : "summary");
     } catch (err) {
       setNodeContent(`[SIGNAL_LOSS] ${err.message}`);
+      setRawContent("");
+      setViewMode("summary");
     }
     setLoadingContent(false);
-  }, [token, isDemoMode]);
+  }, [token]);
 
   return (
     <div style={{ width: "100vw", height: "100vh", background: "#f5f2ec", color: "#000" }}>
@@ -642,14 +617,6 @@ export default function App() {
             <div style={{ fontSize: "13px", letterSpacing: "12px", fontWeight: 700, marginBottom: "25px", animation: "blink 1s infinite" }}>
               ESTABLISHING_SYNC_CONNECTION_
             </div>
-            <div style={{ width: "250px", height: "2px", background: "rgba(0,0,0,0.08)", position: "relative" }}>
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: "100%" }}
-                transition={{ duration: 1.5 }}
-                style={{ position: "absolute", top: 0, left: 0, height: "100%", background: "#000" }}
-              />
-            </div>
             <div style={{ marginTop: 16, fontSize: "10px", letterSpacing: "4px", color: "rgba(0,0,0,0.35)", fontFamily: "monospace" }}>
               FETCHING NOTION WORKSPACE...
             </div>
@@ -678,7 +645,7 @@ export default function App() {
               padding: "10px 20px", border: "1px solid rgba(0,0,0,0.12)",
             }}>
               <h2 style={{ fontSize: "16px", letterSpacing: "5px", fontWeight: 700, fontFamily: "Rajdhani" }}>
-                {isDemoMode ? "NB_DEMO_INSTANCE" : "NB_UNIVERSE_X1"}
+                NB_UNIVERSE_X1
               </h2>
               <button
                 onClick={() => { setPhase("landing"); setSelectedNode(null); setData({ nodes: [], links: [] }); }}
@@ -742,22 +709,34 @@ export default function App() {
                     background: "repeating-linear-gradient(45deg, #000 0, #000 2px, transparent 2px, transparent 8px)",
                   }} />
 
-                  <div style={{ position: "absolute", top: 30, right: 30, display: "flex", gap: "25px" }}>
-                    {selectedNode.url && (
-                      <a href={selectedNode.url} target="_blank" rel="noreferrer"
-                        style={{ fontSize: "11px", color: "#000", fontWeight: 700, letterSpacing: "2px",
-                          borderBottom: "2px solid #000", paddingBottom: "2px", textDecoration: "none" }}>
-                        OPEN_NOTION →
-                      </a>
+                  <div style={{ position: "absolute", top: 30, right: 30, display: "flex", flexDirection: "column", gap: "10px", alignItems: "flex-end" }}>
+                    <div style={{ display: "flex", gap: "25px", alignItems: "center" }}>
+                      {selectedNode.url && (
+                        <a href={selectedNode.url} target="_blank" rel="noreferrer"
+                          style={{ fontSize: "11px", color: "#000", fontWeight: 700, letterSpacing: "2px",
+                            borderBottom: "2px solid #000", paddingBottom: "2px", textDecoration: "none" }}>
+                          OPEN_NOTION →
+                        </a>
+                      )}
+                      <button
+                        onClick={() => setSelectedNode(null)}
+                        style={{ border: "none", background: "none", cursor: "pointer", fontSize: "28px", padding: 0, fontWeight: 300, lineHeight: 1 }}
+                      >×</button>
+                    </div>
+                    {!isRaw && (
+                      <button
+                        onClick={() => setViewMode(v => v === "summary" ? "raw" : "summary")}
+                        style={{ border: "1px solid #000", background: viewMode === "raw" ? "#000" : "transparent", color: viewMode === "raw" ? "#fff" : "#000",
+                          cursor: "pointer", fontSize: "10px", padding: "4px 8px", fontWeight: 700, letterSpacing: "1px",
+                          transition: "all 0.2s" }}
+                      >
+                        {viewMode === "summary" ? "VIEW RAW CONTENT" : "VIEW AI SUMMARY"}
+                      </button>
                     )}
-                    <button
-                      onClick={() => setSelectedNode(null)}
-                      style={{ border: "none", background: "none", cursor: "pointer", fontSize: "28px", padding: 0, fontWeight: 300 }}
-                    >×</button>
                   </div>
 
                   <div style={{ fontSize: "11px", color: "#777", letterSpacing: "4px", marginBottom: "15px", fontWeight: 700 }}>
-                    NODE_SYNC // GEMINI_ORACLE
+                    NODE_SYNC // AI_ORACLE
                   </div>
                   <h3 style={{
                     fontSize: "42px", fontWeight: 900, textTransform: "uppercase",
@@ -773,7 +752,7 @@ export default function App() {
                           FETCHING + SUMMARIZING...
                         </div>
                         <div style={{ fontSize: "10px", color: "#999", letterSpacing: "2px", marginTop: 4 }}>
-                          Notion → content → Gemini AI → summary
+                          Notion → content → AI → summary
                         </div>
                         <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
                           {[0,1,2,3,4].map(i => (
@@ -787,12 +766,12 @@ export default function App() {
                       </div>
                     ) : (
                       <motion.div
+                        key={viewMode}
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.5 }}
-                        style={{ lineHeight: 1.8, color: "#111", fontSize: "14px", fontWeight: 500, whiteSpace: "pre-wrap" }}
                       >
-                        {nodeContent}
+                        <MarkdownRenderer content={viewMode === "raw" ? rawContent : nodeContent} isRaw={isRaw || viewMode === "raw"} />
                       </motion.div>
                     )}
                   </div>
@@ -816,7 +795,7 @@ export default function App() {
               background: "rgba(245,242,236,0.88)", backdropFilter: "blur(8px)",
               padding: "6px 14px", border: "1px solid rgba(0,0,0,0.08)",
             }}>
-              {data.nodes.length} NODES // {isDemoMode ? "DEMO_MODE" : "LIVE_SYNC"} // AI: GEMINI_ACTIVE
+              {data.nodes.length} NODES // LIVE_SYNC // AI_ACTIVE
             </div>
           </motion.div>
         )}
