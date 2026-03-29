@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from routes.graph import router
 
-load_dotenv()  # ← THIS IS THE CRITICAL MISSING LINE
+load_dotenv()  # Load environment variables from .env file
 
 app = FastAPI(title="Notion Brain API")
 

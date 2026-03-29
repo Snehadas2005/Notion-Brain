@@ -9,9 +9,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import WorldBackground from "./WorldBackground";
 import MarkdownRenderer from "./MarkdownRenderer";
 
-// ─────────────────────────────────────────
-// ENV
-// ─────────────────────────────────────────
+// Environment configuration
 const getApiBase = () => {
   try {
     return import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -21,9 +19,7 @@ const getApiBase = () => {
 };
 const API_BASE = getApiBase();
 
-// ─────────────────────────────────────────
-// GLOBAL STYLES
-// ─────────────────────────────────────────
+// Global CSS styles
 const GlobalStyles = () => (
   <style>{`
     @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@100;300;400;700;900&family=Outfit:wght@900&display=swap');
@@ -81,10 +77,7 @@ const GlobalStyles = () => (
   `}</style>
 );
 
-// ─────────────────────────────────────────
-// LANDING BACKGROUND (only during landing phase)
-// Lightweight canvas — no Three.js overhead
-// ─────────────────────────────────────────
+// Landing phase background (Canvas-based)
 function LandingBackground() {
   const canvasRef = useRef();
 
@@ -185,9 +178,7 @@ function LandingBackground() {
   );
 }
 
-// ─────────────────────────────────────────
-// FLOATING PARTICLES (landing only)
-// ─────────────────────────────────────────
+// Floating UI particles
 function FloatingParticles() {
   const particles = Array.from({ length: 14 }, (_, i) => ({
     id: i,
@@ -215,9 +206,7 @@ function FloatingParticles() {
   );
 }
 
-// ─────────────────────────────────────────
-// CORNER BRACKETS
-// ─────────────────────────────────────────
+// Corner decorative brackets
 function CornerBrackets({ color = "rgba(0,0,0,0.15)", size = 20, inset = 24 }) {
   const corners = [
     { top: inset, left: inset, borderTop: `1.5px solid ${color}`, borderLeft: `1.5px solid ${color}` },
@@ -234,9 +223,7 @@ function CornerBrackets({ color = "rgba(0,0,0,0.15)", size = 20, inset = 24 }) {
   );
 }
 
-// ─────────────────────────────────────────
-// TOP HEADER
-// ─────────────────────────────────────────
+// Application Header
 function TopHeader() {
   const [time, setTime] = useState(new Date().toISOString().slice(11, 19));
   useEffect(() => {
@@ -263,9 +250,7 @@ function TopHeader() {
   );
 }
 
-// ─────────────────────────────────────────
-// LANDING HERO GRID
-// ─────────────────────────────────────────
+// Hero section grid layout
 function HeroGrid({ onSubmit }) {
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
@@ -400,9 +385,7 @@ function ConnectionPanel({ onSubmit }) {
   );
 }
 
-// ─────────────────────────────────────────
-// THREE.JS NODE COMPONENTS
-// ─────────────────────────────────────────
+// Three.js Scene Components
 function StructuralBackground() {
   const posRef = useRef(new Float32Array(300 * 3));
   useEffect(() => {
@@ -488,9 +471,7 @@ function NodeBlock({ node, isSelected, onNodeClick, assemblyDelay }) {
   );
 }
 
-// ─────────────────────────────────────────
-// MAIN APP
-// ─────────────────────────────────────────
+// Main Application Component
 export default function App() {
   const [phase, setPhase] = useState("landing");
   const [data, setData] = useState({ nodes: [], links: [] });
@@ -502,14 +483,16 @@ export default function App() {
   const [viewMode, setViewMode] = useState("summary");
   const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState("");
+  const tokenRef = useRef("");
 
-  // ── Connect handler ─────────────────────────────────────────
+  // Handle workspace connection
   const handleSubmit = useCallback(async (customToken) => {
     if (!customToken.trim()) {
       setError("TOKEN_EMPTY — please enter your Notion integration secret");
       return;
     }
 
+    tokenRef.current = customToken;
     setToken(customToken);
     setPhase("loading");
     setError("");
@@ -533,7 +516,7 @@ export default function App() {
     }
   }, []);
 
-  // ── Node click → fetch full content from backend → AI summary ──
+  // Handle node selection and content retrieval
   const fetchDetail = useCallback(async (node) => {
     setSelectedNode(node);
     setNodeContent("");
@@ -541,7 +524,7 @@ export default function App() {
 
     try {
       // Backend handles: Notion full content fetch → AI summarization
-      const resp = await fetch(`${API_BASE}/api/page/${node.id}?token=${encodeURIComponent(token)}`);
+      const resp = await fetch(`${API_BASE}/api/page/${node.id}?token=${encodeURIComponent(tokenRef.current)}`);
       const d = await resp.json();
       setNodeContent(d.content || "[EMPTY_PAGE] No content found.");
       setRawContent(d.raw_content || d.content || "");
@@ -553,17 +536,18 @@ export default function App() {
       setViewMode("summary");
     }
     setLoadingContent(false);
-  }, [token]);
+  }, []);
 
   return (
     <div style={{ width: "100vw", height: "100vh", background: "#f5f2ec", color: "#000" }}>
       <GlobalStyles />
+      <CornerBrackets />
 
-      {/* ── LANDING PHASE ──────────────────────────────────────────── */}
-      <AnimatePresence>
+      {/* Phase Manager */}
+      <AnimatePresence mode="wait">
         {phase === "landing" && (
           <motion.div
-            key="landing"
+            key="phase-landing"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0, transition: { duration: 0.4 } }}
@@ -589,13 +573,10 @@ export default function App() {
             )}
           </motion.div>
         )}
-      </AnimatePresence>
 
-      {/* ── LOADING PHASE ──────────────────────────────────────────── */}
-      <AnimatePresence>
         {phase === "loading" && (
           <motion.div
-            key="loading"
+            key="phase-loading"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -605,29 +586,30 @@ export default function App() {
               flexDirection: "column", background: "#f5f2ec",
             }}
           >
-            <motion.div
-              animate={{ rotate: 360 }}
-              transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-              style={{
-                width: 60, height: 60, border: "2px solid rgba(0,0,0,0.1)",
-                borderTopColor: "#000", borderRadius: "50%", marginBottom: 30,
-              }}
-            />
-            <div style={{ fontSize: "13px", letterSpacing: "12px", fontWeight: 700, marginBottom: "25px", animation: "blink 1s infinite" }}>
-              ESTABLISHING_SYNC_CONNECTION_
-            </div>
-            <div style={{ marginTop: 16, fontSize: "10px", letterSpacing: "4px", color: "rgba(0,0,0,0.35)", fontFamily: "monospace" }}>
-              FETCHING NOTION WORKSPACE...
+            <LandingBackground />
+            <FloatingParticles />
+            <div style={{ position: "relative", zIndex: 10, display: "flex", flexDirection: "column", alignItems: "center" }}>
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                style={{
+                  width: 60, height: 60, border: "2px solid rgba(0,0,0,0.1)",
+                  borderTopColor: "#000", borderRadius: "50%", marginBottom: 30,
+                }}
+              />
+              <div style={{ fontSize: "13px", letterSpacing: "12px", fontWeight: 700, marginBottom: "25px", animation: "blink 1s infinite" }}>
+                ESTABLISHING_SYNC_CONNECTION_
+              </div>
+              <div style={{ marginTop: 16, fontSize: "10px", letterSpacing: "4px", color: "rgba(0,0,0,0.35)", fontFamily: "monospace" }}>
+                FETCHING NOTION WORKSPACE...
+              </div>
             </div>
           </motion.div>
         )}
-      </AnimatePresence>
 
-      {/* ── WORLD PHASE ────────────────────────────────────────────── */}
-      <AnimatePresence>
         {phase === "world" && (
           <motion.div
-            key="world"
+            key="phase-world"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 1.2 }}
@@ -679,7 +661,7 @@ export default function App() {
                     if (!s || !tgt) return null;
                     return (
                       <Line key={i} points={[s.position, tgt.position]}
-                        color="#000" lineWidth={0.8} transparent opacity={0.15} />
+                        color="#000" lineWidth={0.8} transparent opacity={0.2} />
                     );
                   })}
                 </Suspense>

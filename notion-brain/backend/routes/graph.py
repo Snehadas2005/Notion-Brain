@@ -16,23 +16,61 @@ class GraphRequest(BaseModel):
     url:   Optional[str] = None
 
 _node_cache = {}
-_discovered_models = None   # cached after first /models call
+_discovered_models = None
+
 
 def _notion(token: str) -> Client:
     return Client(auth=token)
 
 
+# ── Safe dict-or-object accessor ─────────────────────────────────
+def _safe_get(obj, key, default=None):
+    """Works whether obj is a dict or a Notion SDK object."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _to_dict(obj) -> dict:
+    """Convert Notion SDK response object to plain dict."""
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    # SDK objects expose __dict__ or can be iterated
+    try:
+        return dict(obj)
+    except Exception:
+        try:
+            return vars(obj)
+        except Exception:
+            return {}
+
+
 # ─────────────────────────────────────────
-# RAW NOTION → MARKDOWN  (Gemini fallback)
+# RAW NOTION → MARKDOWN
 # ─────────────────────────────────────────
 
 def _rich_text_to_md(rich_text_arr: list) -> str:
+    if not rich_text_arr:
+        return ""
     result = ""
     for rt in rich_text_arr:
-        text = rt.get("plain_text", "")
+        if isinstance(rt, dict):
+            text = rt.get("plain_text", "")
+            ann  = rt.get("annotations", {})
+            href = rt.get("href") or (rt.get("text", {}) or {}).get("link", {}) or {}
+            if isinstance(href, dict):
+                href = href.get("url", "")
+        else:
+            text = getattr(rt, "plain_text", "")
+            ann  = _to_dict(getattr(rt, "annotations", {}))
+            href = getattr(rt, "href", "")
+
         if not text:
             continue
-        ann = rt.get("annotations", {})
         if ann.get("code"):
             text = f"`{text}`"
         if ann.get("bold") and ann.get("italic"):
@@ -45,19 +83,37 @@ def _rich_text_to_md(rich_text_arr: list) -> str:
             text = f"~~{text}~~"
         if ann.get("underline"):
             text = f"<u>{text}</u>"
-        href = rt.get("href") or (rt.get("text", {}).get("link") or {}).get("url")
         if href:
             text = f"[{text}]({href})"
         result += text
     return result
 
+
+def _block_to_dict(b) -> dict:
+    """Safely convert a block (dict or SDK object) to dict."""
+    if isinstance(b, dict):
+        return b
+    d = {}
+    for attr in ["id", "type", "has_children", "child_page"]:
+        val = getattr(b, attr, None)
+        if val is not None:
+            d[attr] = val
+    btype = d.get("type", "")
+    if btype:
+        raw = getattr(b, btype, None)
+        if raw is not None:
+            d[btype] = _to_dict(raw) if not isinstance(raw, dict) else raw
+    return d
+
+
 def _blocks_to_markdown(blocks: list, client: Client, depth: int = 0) -> str:
     lines = []
     indent = "  " * depth
-    for b in blocks:
+    for raw_b in blocks:
+        b     = _block_to_dict(raw_b) if not isinstance(raw_b, dict) else raw_b
         btype = b.get("type", "")
-        data  = b.get(btype, {})
-        rt    = data.get("rich_text", [])
+        data  = b.get(btype, {}) or {}
+        rt    = data.get("rich_text", []) if isinstance(data, dict) else []
         text  = _rich_text_to_md(rt)
 
         if btype == "heading_1":
@@ -73,47 +129,32 @@ def _blocks_to_markdown(blocks: list, client: Client, depth: int = 0) -> str:
         elif btype == "numbered_list_item":
             lines.append(f"{indent}1. {text}")
         elif btype == "to_do":
-            checked = "x" if data.get("checked") else " "
-            lines.append(f"{indent}- [{checked}] {text}")
+            checked = data.get("checked", False) if isinstance(data, dict) else False
+            lines.append(f"{indent}- [{'x' if checked else ' '}] {text}")
         elif btype == "quote":
             lines.append(f"{indent}> {text}")
         elif btype == "callout":
-            emoji = data.get("icon", {}).get("emoji", "💡")
+            emoji = (data.get("icon", {}) or {}).get("emoji", "💡") if isinstance(data, dict) else "💡"
             lines.append(f"{indent}> {emoji} **{text}**")
         elif btype == "code":
-            lang = data.get("language", "")
-            lines.append(f"\n```{lang}\n{_rich_text_to_md(rt)}\n```\n")
+            lang = data.get("language", "") if isinstance(data, dict) else ""
+            lines.append(f"\n```{lang}\n{text}\n```\n")
         elif btype == "divider":
             lines.append("\n---\n")
         elif btype == "toggle":
             lines.append(f"{indent}▶ **{text}**")
         elif btype == "child_page":
-            title = b.get("child_page", {}).get("title", "Untitled")
+            title = (b.get("child_page") or {}).get("title", "Untitled")
             lines.append(f"{indent}📄 **{title}**")
         elif btype == "table_row":
-            cells = data.get("cells", [])
+            cells = data.get("cells", []) if isinstance(data, dict) else []
             row_text = " | ".join(_rich_text_to_md(cell) for cell in cells)
             lines.append(f"| {row_text} |")
-        elif btype in ("image", "video", "file", "pdf"):
-            caption = _rich_text_to_md(data.get("caption", []))
-            src_type = data.get("type", "")
-            url = data.get(src_type, {}).get("url", "")
-            if caption:
-                lines.append(f"{indent}📎 *{caption}*")
-            elif url:
-                lines.append(f"{indent}📎 [attachment]({url})")
-        elif btype in ("embed", "bookmark", "link_preview"):
-            url = data.get("url", "")
-            caption = _rich_text_to_md(data.get("caption", []))
-            label = caption or url
-            if url:
-                lines.append(f"{indent}🔗 [{label}]({url})")
-        elif btype == "equation":
-            lines.append(f"{indent}$$ {data.get('expression', '')} $$")
 
         if b.get("has_children") and client:
             try:
-                child_blocks = client.blocks.children.list(block_id=b["id"]).get("results", [])
+                child_resp = client.blocks.children.list(block_id=b["id"])
+                child_blocks = _extract_results(child_resp)
                 child_md = _blocks_to_markdown(child_blocks, client, depth + 1)
                 if child_md:
                     lines.append(child_md)
@@ -122,55 +163,89 @@ def _blocks_to_markdown(blocks: list, client: Client, depth: int = 0) -> str:
 
     return "\n".join(lines)
 
+
+def _extract_results(resp) -> list:
+    """Safely pull 'results' from dict or SDK response object."""
+    if resp is None:
+        return []
+    if isinstance(resp, dict):
+        return resp.get("results", []) or []
+    return getattr(resp, "results", []) or []
+
+
 def _extract_text_deep(blocks: list, client: Client, depth: int = 0) -> str:
     parts = []
     if depth > 3:
         return ""
-    for b in blocks:
-        btype = b.get("type", "")
-        block_data = b.get(btype, {})
-        for rt in block_data.get("rich_text", []):
-            text = rt.get("plain_text", "").strip()
+    for raw_b in blocks:
+        b      = _block_to_dict(raw_b) if not isinstance(raw_b, dict) else raw_b
+        btype  = b.get("type", "")
+        bdata  = b.get(btype, {}) or {}
+        rt     = bdata.get("rich_text", []) if isinstance(bdata, dict) else []
+        for item in rt:
+            text = (item.get("plain_text", "") if isinstance(item, dict) else getattr(item, "plain_text", "")).strip()
             if text:
                 parts.append(text)
         if btype == "child_page":
-            title = b.get("child_page", {}).get("title", "")
+            title = (b.get("child_page") or {}).get("title", "")
             if title:
                 parts.append(f"[Page: {title}]")
         if b.get("has_children") and client and depth < 3:
             try:
-                child_blocks = client.blocks.children.list(block_id=b["id"]).get("results", [])
+                child_resp   = client.blocks.children.list(block_id=b["id"])
+                child_blocks = _extract_results(child_resp)
                 parts.append(_extract_text_deep(child_blocks, client, depth + 1))
             except Exception:
                 pass
     return "\n".join(filter(None, parts))
 
-def _page_title(page: dict) -> str:
+
+def _page_title(page) -> str:
+    """Extract title safely from dict or SDK page object."""
+    if page is None:
+        return "Untitled"
+    props = _safe_get(page, "properties") or {}
+    if not isinstance(props, dict):
+        props = _to_dict(props)
     for key in ("title", "Name"):
-        prop  = page.get("properties", {}).get(key, {})
+        prop = props.get(key, {}) or {}
+        if not isinstance(prop, dict):
+            prop = _to_dict(prop)
         items = prop.get("title") or prop.get("rich_text") or []
         if items:
-            t = items[0].get("plain_text", "")
+            first = items[0]
+            t = first.get("plain_text", "") if isinstance(first, dict) else getattr(first, "plain_text", "")
             if t:
                 return t
     return "Untitled"
 
+
 def _get_blocks(client: Client, page_id: str) -> list:
     try:
         results = []
-        cursor = None
+        cursor  = None
         while True:
             kwargs = {"block_id": page_id, "page_size": 100}
             if cursor:
                 kwargs["start_cursor"] = cursor
             resp = client.blocks.children.list(**kwargs)
-            results.extend(resp.get("results", []))
-            if not resp.get("has_more"):
+
+            if resp is None:
+                print(f"[BLOCKS] None response for {page_id}")
                 break
-            cursor = resp.get("next_cursor")
+
+            batch = _extract_results(resp)
+            results.extend(batch)
+
+            has_more = resp.get("has_more") if isinstance(resp, dict) else getattr(resp, "has_more", False)
+            if not has_more:
+                break
+            cursor = resp.get("next_cursor") if isinstance(resp, dict) else getattr(resp, "next_cursor", None)
         return results
-    except Exception:
+    except Exception as e:
+        print(f"[BLOCKS] Exception for {page_id}: {e}")
         return []
+
 
 def _fetch_all_pages(client: Client, limit: int = 40) -> list:
     results = []
@@ -183,43 +258,53 @@ def _fetch_all_pages(client: Client, limit: int = 40) -> list:
         if cursor:
             kwargs["start_cursor"] = cursor
         resp = client.search(**kwargs)
-        results.extend(resp.get("results", []))
-        if not resp.get("has_more"):
+        batch = _extract_results(resp)
+        results.extend(batch)
+        has_more = resp.get("has_more") if isinstance(resp, dict) else getattr(resp, "has_more", False)
+        if not has_more:
             break
-        cursor = resp.get("next_cursor")
+        cursor = resp.get("next_cursor") if isinstance(resp, dict) else getattr(resp, "next_cursor", None)
     return results
 
+
 def _build_graph(pages: list, client: Client) -> dict:
-    node_ids = {p["id"] for p in pages}
-    links = []
-    page_map = {p["id"]: p for p in pages}
+    node_ids  = {_safe_get(p, "id") for p in pages}
+    links     = []
+    page_map  = {_safe_get(p, "id"): p for p in pages}
+
     for page in pages:
-        pid   = page["id"]
+        pid    = _safe_get(page, "id")
         blocks = _get_blocks(client, pid)
-        for b in blocks:
+        for raw_b in blocks:
+            b     = _block_to_dict(raw_b) if not isinstance(raw_b, dict) else raw_b
             btype = b.get("type", "")
             if btype == "child_page":
                 target = b.get("id")
                 if target in node_ids and target != pid:
                     links.append({"source": pid, "target": target})
-            for rt in b.get(btype, {}).get("rich_text", []):
-                mention = rt.get("mention", {})
+            bdata = b.get(btype, {}) or {}
+            for rt in (bdata.get("rich_text", []) if isinstance(bdata, dict) else []):
+                mention = (rt.get("mention", {}) if isinstance(rt, dict) else {}) or {}
                 if mention.get("type") == "page":
-                    target = mention["page"]["id"]
-                    if target in node_ids:
+                    target = (mention.get("page") or {}).get("id")
+                    if target and target in node_ids:
                         links.append({"source": pid, "target": target})
+
     final_nodes = []
     for pid in node_ids:
+        if pid is None:
+            continue
         p = page_map[pid]
         final_nodes.append({
             "id":    pid,
             "label": _page_title(p),
-            "url":   p.get("url", ""),
-            "edited": p.get("last_edited_time", ""),
+            "url":   _safe_get(p, "url") or "",
+            "edited": _safe_get(p, "last_edited_time") or "",
         })
-    valid_ids = {n["id"] for n in final_nodes}
+    valid_ids   = {n["id"] for n in final_nodes}
     final_links = [l for l in links if l["source"] in valid_ids and l["target"] in valid_ids]
     return {"nodes": final_nodes, "links": final_links}
+
 
 def _assign_positions(nodes: list) -> list:
     n = len(nodes)
@@ -236,13 +321,8 @@ def _assign_positions(nodes: list) -> list:
 
 
 # ─────────────────────────────────────────
-# MODEL DISCOVERY — call ListModels once,
-# cache the real API names forever.
-# Priority: highest RPM text models first.
+# GEMINI — with hard per-model timeout
 # ─────────────────────────────────────────
-
-# Display names (from your dashboard) → preferred priority order
-# Higher RPM = higher priority
 PREFERRED_KEYWORDS = [
     "gemini-3.1-flash-lite",   # 15 RPM — highest
     "gemini-2.5-flash-lite",   # 10 RPM
@@ -258,37 +338,31 @@ PREFERRED_KEYWORDS = [
     "gemma-3",                 # Gemma fallback (30 RPM but less capable)
 ]
 
+MAX_RETRIES        = 2
+BASE_DELAY         = 2.0
+PER_MODEL_TIMEOUT  = 12.0   # hard cap per model attempt (seconds)
+GEMINI_TOTAL_CAP   = 30.0   # absolute ceiling for the whole summarise call
+
 
 async def _discover_models(api_key: str) -> list[str]:
-    """
-    Calls GET /v1beta/models, returns actual model IDs that support
-    generateContent, sorted by our preferred priority.
-    Result is cached in _discovered_models.
-    """
     global _discovered_models
     if _discovered_models is not None:
         return _discovered_models
-
     try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=8.0, read=12.0, write=5.0, pool=5.0)) as http:
             resp = await http.get(
                 f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}&pageSize=200"
             )
             if resp.status_code != 200:
-                print(f"[GEMINI] ListModels failed {resp.status_code} — will try preferred list blind")
                 _discovered_models = PREFERRED_KEYWORDS
                 return _discovered_models
 
             all_models = resp.json().get("models", [])
-            # Keep only models that support generateContent
             gen_models = [
                 m["name"].replace("models/", "")
                 for m in all_models
                 if "generateContent" in m.get("supportedGenerationMethods", [])
             ]
-            print(f"[GEMINI] ListModels found {len(gen_models)} generateContent models: {gen_models}")
-
-            # Sort: preferred keywords first (matched by substring), rest appended
             ordered = []
             for kw in PREFERRED_KEYWORDS:
                 for m in gen_models:
@@ -298,96 +372,67 @@ async def _discover_models(api_key: str) -> list[str]:
                 if m not in ordered:
                     ordered.append(m)
 
-            _discovered_models = ordered if ordered else gen_models
-            print(f"[GEMINI] Model priority order: {_discovered_models}")
+            _discovered_models = ordered if ordered else PREFERRED_KEYWORDS
+            print(f"[GEMINI] Model order: {_discovered_models[:5]}")
             return _discovered_models
-
     except Exception as e:
-        print(f"[GEMINI] ListModels exception: {e}")
+        print(f"[GEMINI] ListModels failed: {e}")
         _discovered_models = PREFERRED_KEYWORDS
         return _discovered_models
 
 
-# ─────────────────────────────────────────
-# GEMINI CALL — retries on 429, skips 404
-# ─────────────────────────────────────────
-
-MAX_RETRIES = 4
-BASE_DELAY  = 3.0
-
-
 async def _call_model(http: httpx.AsyncClient, model: str, api_key: str, prompt: str) -> str | None:
-    """
-    Try one model. Returns text on success, None to skip to next model.
-    Raises ValueError on hard errors (403, SAFETY).
-    """
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/"
         f"models/{model}:generateContent?key={api_key}"
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 2.0,
-            "maxOutputTokens": 5000,
-            "topP": 0.95,
-        },
+        "generationConfig": {"temperature": 1.0, "maxOutputTokens": 3000, "topP": 0.95},
     }
-
     delay = BASE_DELAY
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = await http.post(url, json=payload)
-        except httpx.TimeoutException:
+            # Hard timeout per attempt
+            resp = await asyncio.wait_for(
+                http.post(url, json=payload),
+                timeout=PER_MODEL_TIMEOUT
+            )
+        except (asyncio.TimeoutError, httpx.TimeoutException):
             print(f"[GEMINI] Timeout {model} attempt {attempt}")
-            if attempt == MAX_RETRIES:
-                return None
-            await asyncio.sleep(delay); delay *= 2
-            continue
+            return None   # skip to next model immediately
 
         if resp.status_code == 200:
-            data = resp.json()
+            data       = resp.json()
             candidates = data.get("candidates", [])
             if candidates:
                 if candidates[0].get("finishReason") == "SAFETY":
-                    raise ValueError("⚠️ Content flagged by Gemini safety filters.")
+                    raise ValueError("⚠️ Content flagged by safety filters.")
                 parts = candidates[0].get("content", {}).get("parts", [])
                 if parts and parts[0].get("text", "").strip():
-                    print(f"[GEMINI] ✓ Success with {model}")
+                    print(f"[GEMINI] ✓ {model}")
                     return parts[0]["text"].strip()
-            block = data.get("promptFeedback", {}).get("blockReason", "")
-            if block:
-                raise ValueError(f"⚠️ Blocked: {block}")
             return None
 
         elif resp.status_code == 429:
-            retry_after = resp.headers.get("Retry-After")
-            wait = float(retry_after) if retry_after else delay
-            print(f"[GEMINI] 429 {model} attempt {attempt}/{MAX_RETRIES} — wait {wait:.1f}s")
+            print(f"[GEMINI] 429 {model} attempt {attempt} — skip")
             if attempt == MAX_RETRIES:
                 return None
-            await asyncio.sleep(wait); delay *= 2
-
-        elif resp.status_code == 403:
-            msg = resp.json().get("error", {}).get("message", "Forbidden")
-            raise ValueError(f"⚠️ API key rejected (403): {msg}")
+            await asyncio.sleep(delay)
+            delay *= 2
 
         elif resp.status_code == 404:
-            print(f"[GEMINI] 404 {model} — not available, trying next")
+            print(f"[GEMINI] 404 {model} — not available")
             return None
 
         else:
-            print(f"[GEMINI] {resp.status_code} {model}: {resp.text[:100]}")
+            print(f"[GEMINI] {resp.status_code} {model}")
             return None
 
     return None
 
 
 async def _summarize_with_gemini_async(text: str, page_title: str) -> str | None:
-    """
-    Tries every available model in priority order.
-    Returns summary string, or None if all fail (triggers raw fallback).
-    """
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key or not text.strip():
         return None
@@ -398,24 +443,30 @@ async def _summarize_with_gemini_async(text: str, page_title: str) -> str | None
 
     prompt = (
         f"You are analyzing a Notion page titled: '{page_title}'\n\n"
-        "Provide a structured, intelligent summary.\n"
+        "Provide a structured summary.\n"
         "Format:\n"
         "📌 OVERVIEW: [2-3 sentence summary]\n"
         "🔑 KEY POINTS:\n• [point 1]\n• [point 2]\n• [point 3]\n"
-        "🏷️ CATEGORY: [page type]\n\n"
-        f"PAGE CONTENT:\n{text}"
+        f"🏷️ CATEGORY: [page type]\n\nPAGE CONTENT:\n{text[:3000]}"
     )
 
-    async with httpx.AsyncClient(timeout=60.0) as http:
-        for model in models:
-            try:
-                result = await _call_model(http, model, api_key, prompt)
-                if result:
-                    return result
-            except ValueError as e:
-                return str(e)  # hard error — show to user
+    try:
+        # Absolute ceiling — never hang longer than this
+        async with asyncio.timeout(GEMINI_TOTAL_CAP):
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=8.0, read=PER_MODEL_TIMEOUT, write=5.0, pool=5.0)
+            ) as http:
+                for model in models[:5]:   # try max 5 models
+                    try:
+                        result = await _call_model(http, model, api_key, prompt)
+                        if result:
+                            return result
+                    except ValueError as e:
+                        return str(e)
+    except asyncio.TimeoutError:
+        print(f"[GEMINI] Total cap exceeded ({GEMINI_TOTAL_CAP}s) — falling back to raw")
 
-    return None  # all models failed → caller will use raw fallback
+    return None   # triggers raw fallback
 
 
 # ─────────────────────────────────────────
@@ -447,42 +498,57 @@ async def get_page_detail(page_id: str, token: str = ""):
         c = _node_cache[cache_key]
         return {"id": page_id, "content": c["content"], "raw_content": c.get("raw_content", ""), "is_raw": c["is_raw"]}
 
+    # ── Step 1: page meta ──────────────────────────────────────────
+    client     = _notion(token)
+    page_title = "Untitled Page"
     try:
-        client = _notion(token)
-
-        try:
-            page_meta  = client.pages.retrieve(page_id=page_id)
+        page_meta = client.pages.retrieve(page_id=page_id)
+        if page_meta is not None:
             page_title = _page_title(page_meta)
-        except Exception:
-            page_title = "Untitled Page"
-
-        blocks = _get_blocks(client, page_id)
-        if not blocks:
-            result = {"content": "[EMPTY_PAGE] This Notion page has no content.", "is_raw": False}
-            _node_cache[cache_key] = result
-            return {"id": page_id, **result}
-
-        # ── Try Gemini ────────────────────────────────────────────
-        plain_text     = _extract_text_deep(blocks, client, depth=0)
-        
-        raw_md = _blocks_to_markdown(blocks, client, depth=0)
-        if not raw_md.strip():
-            raw_md = plain_text
-
-        gemini_summary = await _summarize_with_gemini_async(plain_text, page_title)
-
-        if gemini_summary:
-            result = {"content": gemini_summary, "raw_content": raw_md, "is_raw": False}
         else:
-            # ── Fallback: full raw Notion content as markdown ──────
-            print(f"[FALLBACK] Returning raw Notion content for {page_id}")
-            result = {"content": raw_md, "raw_content": raw_md, "is_raw": True}
+            print(f"[PAGE_META] None for {page_id}")
+    except Exception as e:
+        print(f"[PAGE_META] Error: {e}")
 
+    # ── Step 2: blocks ────────────────────────────────────────────
+    blocks = _get_blocks(client, page_id)
+    if not blocks:
+        result = {
+            "content": "[EMPTY_PAGE] No content found or integration lacks access.\n\nMake sure your Notion integration is added to this page via Share → Connections.",
+            "raw_content": "",
+            "is_raw": False
+        }
         _node_cache[cache_key] = result
         return {"id": page_id, **result}
 
+    # ── Step 3: build raw markdown FIRST (always available) ───────
+    try:
+        raw_md = _blocks_to_markdown(blocks, client, depth=0)
     except Exception as e:
-        error_msg = str(e)
-        if "Could not find page" in error_msg or "unauthorized" in error_msg.lower():
-            return {"id": page_id, "content": "[ACCESS_DENIED] Make sure your Notion integration has access to this page.", "is_raw": False}
-        return {"id": page_id, "content": f"[RETRIEVAL_ERROR] {error_msg[:200]}", "is_raw": False}
+        print(f"[MARKDOWN] Error: {e}")
+        raw_md = ""
+
+    if not raw_md.strip():
+        try:
+            raw_md = _extract_text_deep(blocks, client, depth=0)
+        except Exception as e:
+            print(f"[EXTRACT] Error: {e}")
+            raw_md = "[Could not parse page content]"
+
+    # ── Step 4: try Gemini — if it fails/times out, use raw ───────
+    plain_text     = ""
+    gemini_summary = None
+    try:
+        plain_text     = _extract_text_deep(blocks, client, depth=0)
+        gemini_summary = await _summarize_with_gemini_async(plain_text, page_title)
+    except Exception as e:
+        print(f"[GEMINI] Unexpected error: {e}")
+
+    if gemini_summary:
+        result = {"content": gemini_summary, "raw_content": raw_md, "is_raw": False}
+    else:
+        print(f"[FALLBACK] Using raw content for {page_id}")
+        result = {"content": raw_md, "raw_content": raw_md, "is_raw": True}
+
+    _node_cache[cache_key] = result
+    return {"id": page_id, **result}
