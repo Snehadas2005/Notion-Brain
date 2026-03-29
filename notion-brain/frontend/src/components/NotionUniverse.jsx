@@ -29,7 +29,6 @@ const GlobalStyles = () => (
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      overflow: hidden;
       background: #f5f2ec;
       font-family: 'Rajdhani', sans-serif;
       cursor: crosshair;
@@ -306,7 +305,7 @@ function HeroGrid({ onSubmit }) {
           </div>
         </div>
       </div>
-      <div style={{ height: window.innerWidth < 768 ? "80px" : "140px", borderTop: "1px solid rgba(0,0,0,0.08)", display: "flex" }}>
+      <div style={{ height: window.innerWidth < 768 ? "60px" : "80px", borderTop: "1px solid rgba(0,0,0,0.08)", display: "flex" }}>
         {Array.from({ length: window.innerWidth < 768 ? 6 : 14 }).map((_, i) => (
           <div key={i} style={{
             flex: 1, borderRight: i === (window.innerWidth < 768 ? 5 : 13) ? "none" : "1.5px solid rgba(0,0,0,0.08)",
@@ -332,7 +331,7 @@ function MainTitle() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 1, delay: 0.5 }}
-      style={{ padding: "0 24px", position: "relative", overflow: "hidden", marginBottom: "40px" }}
+      style={{ padding: "0 24px", position: "relative", overflow: "hidden", marginBottom: "20px" }}
     >
       <div style={{ display: "flex", alignItems: "baseline" }}>
         <h1 style={{
@@ -355,56 +354,169 @@ function MainTitle() {
   );
 }
 
-function ConnectionPanel({ onSubmit }) {
-  const [token, setToken] = useState("");
+function ConnectionPanel({ onSubmitToken, onSubmitLink }) {
+  const [mode, setMode]       = useState("easy");   // "easy" | "advanced"
+  const [token, setToken]     = useState("");
+  const [url, setUrl]         = useState("");
   const [focused, setFocused] = useState(false);
+
+  const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+
+  const tabStyle = (active) => ({
+    padding: "6px 20px",
+    fontSize: "10px",
+    letterSpacing: "3px",
+    fontWeight: 700,
+    cursor: "pointer",
+    border: "none",
+    background: active ? "#000" : "transparent",
+    color: active ? "#fff" : "rgba(0,0,0,0.4)",
+    transition: "all 0.2s",
+    outline: "none",
+  });
+
+  const inputWrapStyle = {
+    border: `2px solid ${focused ? "#000" : "rgba(0,0,0,0.15)"}`,
+    padding: "8px 20px",
+    display: "flex",
+    alignItems: "center",
+    maxWidth: isMobile ? "100%" : "450px",
+    transition: "border-color 0.3s",
+  };
+
+  const execBtnStyle = {
+    padding: isMobile ? "18px 0" : "20px 50px",
+    width: isMobile ? "100%" : "auto",
+    background: "#000",
+    color: "#fff",
+    border: "none",
+    fontSize: "13px",
+    letterSpacing: "4px",
+    fontWeight: 700,
+    cursor: "pointer",
+    transition: "opacity 0.2s",
+    flexShrink: 0,
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.7, delay: 0.4 }}
-      style={{ 
-        padding: window.innerWidth < 768 ? "30px 24px" : "50px 24px", 
-        display: "flex", 
-        flexDirection: window.innerWidth < 768 ? "column" : "row",
-        gap: window.innerWidth < 768 ? "25px" : "80px", 
-        alignItems: window.innerWidth < 768 ? "flex-start" : "flex-end" 
+      style={{
+        padding: isMobile ? "30px 24px" : "50px 24px",
       }}
     >
-      <div style={{ width: "100%", flex: 1 }}>
-        <div style={{ fontSize: "10px", letterSpacing: "3px", color: "#999", marginBottom: "15px", fontWeight: 700 }}>&gt;_CONNECT WORKSPACE</div>
-        <div style={{
-          border: `2px solid ${focused ? "#000" : "rgba(0,0,0,0.15)"}`,
-          padding: "8px 20px", display: "flex", alignItems: "center", 
-          maxWidth: window.innerWidth < 768 ? "100%" : "450px",
-          transition: "border-color 0.3s",
-        }}>
-          <span style={{ marginRight: "12px", fontWeight: 600, opacity: 0.3 }}>&gt;</span>
-          <input
-            value={token}
-            onChange={e => setToken(e.target.value)}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            placeholder="secret_xxxxxx..."
-            type="password"
-            style={{ flex: 1, background: "none", border: "none", outline: "none",
-              fontSize: "15px", fontFamily: "monospace", letterSpacing: "2px", fontWeight: 500, width: "100%" }}
-          />
-        </div>
+      {/* ── Mode tabs ─────────────────────────────────────────────── */}
+      <div style={{ display: "flex", marginBottom: "28px", borderBottom: "1.5px solid rgba(0,0,0,0.1)" }}>
+        <button style={tabStyle(mode === "easy")}     onClick={() => setMode("easy")}>
+          EASY MODE
+        </button>
+        <button style={tabStyle(mode === "advanced")} onClick={() => setMode("advanced")}>
+          ADVANCED MODE
+        </button>
       </div>
-      <button
-        onClick={() => onSubmit(token)}
-        style={{ 
-          padding: window.innerWidth < 768 ? "18px 0" : "20px 50px", 
-          width: window.innerWidth < 768 ? "100%" : "auto",
-          background: "#000", color: "#fff", border: "none",
-          fontSize: "13px", letterSpacing: "4px", fontWeight: 700, cursor: "pointer",
-          transition: "transform 0.2s, opacity 0.2s" }}
-        onMouseEnter={e => e.target.style.opacity = "0.8"}
-        onMouseLeave={e => e.target.style.opacity = "1"}
-      >
-        EXECUTE_CONNECTION_
-      </button>
+
+      {/* ── Easy mode ─────────────────────────────────────────────── */}
+      {mode === "easy" && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: isMobile ? "column" : "row",
+            gap: isMobile ? "25px" : "80px",
+            alignItems: isMobile ? "flex-start" : "flex-end",
+          }}
+        >
+          <div style={{ width: "100%", flex: 1 }}>
+            <div style={{ fontSize: "10px", letterSpacing: "3px", color: "#999", marginBottom: "8px", fontWeight: 700 }}>
+              &gt;_PASTE NOTION PAGE LINK
+            </div>
+            <div style={{ fontSize: "10px", color: "rgba(0,0,0,0.4)", marginBottom: "14px", letterSpacing: "1px", lineHeight: 1.6 }}>
+              Make sure the page is publicly accessible or shared with the integration.
+            </div>
+            <div style={inputWrapStyle}>
+              <span style={{ marginRight: "12px", fontWeight: 600, opacity: 0.3 }}>&gt;</span>
+              <input
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                onKeyDown={(e) => e.key === "Enter" && onSubmitLink(url)}
+                placeholder="https://notion.so/your-page-abc123..."
+                type="url"
+                style={{
+                  flex: 1,
+                  background: "none",
+                  border: "none",
+                  outline: "none",
+                  fontSize: "14px",
+                  fontFamily: "monospace",
+                  letterSpacing: "1px",
+                  fontWeight: 500,
+                  width: "100%",
+                }}
+              />
+            </div>
+          </div>
+          <button
+            onClick={() => onSubmitLink(url)}
+            style={execBtnStyle}
+            onMouseEnter={(e) => (e.target.style.opacity = "0.8")}
+            onMouseLeave={(e) => (e.target.style.opacity = "1")}
+          >
+            LOAD_PAGE_
+          </button>
+        </div>
+      )}
+
+      {/* ── Advanced mode ─────────────────────────────────────────── */}
+      {mode === "advanced" && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: isMobile ? "column" : "row",
+            gap: isMobile ? "25px" : "80px",
+            alignItems: isMobile ? "flex-start" : "flex-end",
+          }}
+        >
+          <div style={{ width: "100%", flex: 1 }}>
+            <div style={{ fontSize: "10px", letterSpacing: "3px", color: "#999", marginBottom: "15px", fontWeight: 700 }}>
+              &gt;_CONNECT WORKSPACE
+            </div>
+            <div style={inputWrapStyle}>
+              <span style={{ marginRight: "12px", fontWeight: 600, opacity: 0.3 }}>&gt;</span>
+              <input
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                onKeyDown={(e) => e.key === "Enter" && onSubmitToken(token)}
+                placeholder="secret_xxxxxx..."
+                type="password"
+                style={{
+                  flex: 1,
+                  background: "none",
+                  border: "none",
+                  outline: "none",
+                  fontSize: "15px",
+                  fontFamily: "monospace",
+                  letterSpacing: "2px",
+                  fontWeight: 500,
+                  width: "100%",
+                }}
+              />
+            </div>
+          </div>
+          <button
+            onClick={() => onSubmitToken(token)}
+            style={execBtnStyle}
+            onMouseEnter={(e) => (e.target.style.opacity = "0.8")}
+            onMouseLeave={(e) => (e.target.style.opacity = "1")}
+          >
+            EXECUTE_CONNECTION_
+          </button>
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -510,17 +622,15 @@ export default function App() {
   const tokenRef = useRef("");
 
   // Handle workspace connection
-  const handleSubmit = useCallback(async (customToken) => {
+  const handleSubmitToken = useCallback(async (customToken) => {
     if (!customToken.trim()) {
       setError("TOKEN_EMPTY — please enter your Notion integration secret");
       return;
     }
-
     tokenRef.current = customToken;
     setToken(customToken);
     setPhase("loading");
     setError("");
-
     try {
       const resp = await fetch(`${API_BASE}/api/graph`, {
         method: "POST",
@@ -533,6 +643,34 @@ export default function App() {
       }
       const resData = await resp.json();
       setData(resData);
+      setPhase("world");
+    } catch (err) {
+      setError(err.message);
+      setPhase("landing");
+    }
+  }, []);
+
+  const handleSubmitLink = useCallback(async (pageUrl) => {
+    if (!pageUrl.trim()) {
+      setError("URL_EMPTY — please paste a Notion page link");
+      return;
+    }
+    // Easy mode: no user token — server uses its own NOTION_API_KEY
+    tokenRef.current = "";
+    setToken("");
+    setPhase("loading");
+    setError("");
+    try {
+      const resp = await fetch(`${API_BASE}/api/load-notion-from-link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ page_url: pageUrl }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || "LINK_ERROR");
+      }
+      setData(await resp.json());
       setPhase("world");
     } catch (err) {
       setError(err.message);
@@ -575,15 +713,14 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0, transition: { duration: 0.4 } }}
-            style={{ position: "absolute", inset: 0, zIndex: 10 }}
+            style={{ position: "absolute", inset: 0, zIndex: 10, overflowY: "auto", overflowX: "hidden" }}
           >
-            <div style={{ height: "100vh", display: "flex", flexDirection: "column", position: "relative", zIndex: 10 }}>
+            <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", position: "relative", zIndex: 10 }}>
               <TopHeader />
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "60px 0 0" }}>
-                <HeroGrid onSubmit={handleSubmit} />
-                <div style={{ flex: 1 }} />
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "40px 0 0" }}>
+                <HeroGrid onSubmit={handleSubmitToken} />
                 <MainTitle />
-                <ConnectionPanel onSubmit={handleSubmit} />
+                <ConnectionPanel onSubmitToken={handleSubmitToken} onSubmitLink={handleSubmitLink} />
               </div>
             </div>
             {error && (
@@ -637,7 +774,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 1.2 }}
-            style={{ position: "absolute", inset: 0, zIndex: 10 }}
+            style={{ position: "absolute", inset: 0, zIndex: 10, overflow: "hidden" }}
           >
             {/* THE WORLD BACKGROUND — only rendered here */}
             <WorldBackground active={phase === "world"} />

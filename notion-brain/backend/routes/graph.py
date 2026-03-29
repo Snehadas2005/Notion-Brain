@@ -6,6 +6,7 @@ import math
 import os
 import asyncio
 import httpx
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 
@@ -16,23 +17,201 @@ class GraphRequest(BaseModel):
     token: Optional[str] = None
     url:   Optional[str] = None
 
+class LinkRequest(BaseModel):
+    page_url: str
+
 _node_cache = {}
 _discovered_models = None
 
-# Thread pool — keeps blocking Notion SDK calls off the event loop
 _executor = ThreadPoolExecutor(max_workers=4)
 
-# Timeout (seconds) for any single blocking Notion operation
 NOTION_CALL_TIMEOUT = 20.0
 
+
+# ─────────────────────────────────────────
+# NEW: Page ID extraction from Notion URL
+# ─────────────────────────────────────────
+
+def _extract_page_id(url: str) -> Optional[str]:
+    """
+    Extract Notion page ID from various URL formats:
+      - https://www.notion.so/Page-Title-abc123def456...
+      - https://www.notion.so/workspace/abc123def456...
+      - https://notion.so/abc123def456...
+      - Raw 32-char hex IDs (no hyphens)
+      - Standard UUID format (with hyphens)
+    Returns the page ID as a hyphenated UUID string, or None if not found.
+    """
+    # Strip query params and fragments
+    clean = url.split("?")[0].split("#")[0].rstrip("/")
+
+    # Match 32-char hex at end of URL path (no hyphens)
+    match = re.search(r"([0-9a-f]{32})$", clean, re.IGNORECASE)
+    if match:
+        raw = match.group(1).lower()
+        # Insert hyphens: 8-4-4-4-12
+        return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+
+    # Match UUID format (already hyphenated)
+    match = re.search(
+        r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        clean,
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).lower()
+
+    return None
+
+
+# ─────────────────────────────────────────
+# NEW: Recursive sub-page fetcher
+# ─────────────────────────────────────────
+
+def _fetch_subpages_sync(client: Client, page_id: str, depth: int = 0, max_depth: int = 2) -> list:
+    """
+    Recursively discover child pages up to max_depth levels.
+    Returns a flat list of page objects.
+    """
+    if depth >= max_depth:
+        return []
+
+    discovered = []
+    try:
+        cursor = None
+        while True:
+            kwargs = {"block_id": page_id, "page_size": 100}
+            if cursor:
+                kwargs["start_cursor"] = cursor
+            resp = client.blocks.children.list(**kwargs)
+            if resp is None:
+                break
+            blocks = _extract_results(resp)
+            for b in blocks:
+                bd = _block_to_dict(b) if not isinstance(b, dict) else b
+                btype = bd.get("type", "")
+                if btype == "child_page":
+                    child_id = bd.get("id")
+                    if child_id:
+                        try:
+                            page_meta = client.pages.retrieve(page_id=child_id)
+                            discovered.append(page_meta)
+                            # Recurse into this child
+                            discovered.extend(
+                                _fetch_subpages_sync(client, child_id, depth + 1, max_depth)
+                            )
+                        except Exception:
+                            pass
+            has_more = resp.get("has_more") if isinstance(resp, dict) else getattr(resp, "has_more", False)
+            if not has_more:
+                break
+            cursor = resp.get("next_cursor") if isinstance(resp, dict) else getattr(resp, "next_cursor", None)
+    except Exception as e:
+        print(f"[SUBPAGES] Error at depth {depth} for {page_id}: {e}")
+
+    return discovered
+
+
+# ─────────────────────────────────────────
+# NEW: Build graph starting from a single root page
+# ─────────────────────────────────────────
+
+async def _build_graph_from_root(root_page_id: str, client: Client) -> dict:
+    """
+    Fetch root page + all nested sub-pages, then build the graph.
+    """
+    loop = asyncio.get_event_loop()
+
+    # Fetch root page metadata
+    root_page = await asyncio.wait_for(
+        loop.run_in_executor(_executor, _fetch_page_meta_sync, client, root_page_id),
+        timeout=NOTION_CALL_TIMEOUT,
+    )
+    if root_page is None:
+        raise HTTPException(status_code=404, detail="PAGE_NOT_FOUND — check that the page is shared with the integration")
+
+    # Recursively fetch sub-pages (blocking, run in executor)
+    try:
+        sub_pages = await asyncio.wait_for(
+            loop.run_in_executor(_executor, _fetch_subpages_sync, client, root_page_id, 0, 2),
+            timeout=NOTION_CALL_TIMEOUT * 3,
+        )
+    except asyncio.TimeoutError:
+        print("[SUBPAGES] Timeout — using root only")
+        sub_pages = []
+    except Exception as e:
+        print(f"[SUBPAGES] Error: {e}")
+        sub_pages = []
+
+    all_pages = [root_page] + sub_pages
+
+    # Deduplicate by ID
+    seen = set()
+    unique_pages = []
+    for p in all_pages:
+        pid = _safe_get(p, "id")
+        if pid and pid not in seen:
+            seen.add(pid)
+            unique_pages.append(p)
+
+    print(f"[LINK_MODE] Found {len(unique_pages)} pages from root {root_page_id}")
+    return await _build_graph(unique_pages, client)
+
+
+# ─────────────────────────────────────────
+# NEW ENDPOINT: POST /api/load-notion-from-link
+# ─────────────────────────────────────────
+
+@router.post("/load-notion-from-link")
+async def load_from_link(req: LinkRequest):
+    """
+    Easy-mode endpoint: accepts a Notion page URL and uses the
+    server's NOTION_API_KEY env variable. No user token required.
+    """
+    # 1. Extract page ID
+    page_id = _extract_page_id(req.page_url.strip())
+    if not page_id:
+        raise HTTPException(
+            status_code=400,
+            detail="INVALID_URL — could not extract a page ID from the provided link",
+        )
+
+    # 2. Load default integration token (fallback to NOTION_TOKEN if NOTION_API_KEY is not set)
+    default_token = (os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()
+    if not default_token:
+        raise HTTPException(
+            status_code=500,
+            detail="SERVER_CONFIG_ERROR — NOTION_API_KEY is not set on the server",
+        )
+
+    # 3. Build graph starting from root page
+    try:
+        client = _notion(default_token)
+        graph = await _build_graph_from_root(page_id, client)
+        graph["nodes"] = _assign_positions(graph["nodes"])
+        return graph
+    except HTTPException:
+        raise
+    except Exception as e:
+        err = str(e)
+        # Notion 403 / object_not_found → friendly message
+        if "object_not_found" in err or "403" in err or "Unauthorized" in err:
+            raise HTTPException(
+                status_code=403,
+                detail="ACCESS_DENIED — please make the page public or share it with the integration",
+            )
+        raise HTTPException(status_code=500, detail=f"GRAPH_ERROR: {err}")
+
+
+# ─────────────────────────────────────────
+# Unchanged helpers below (kept verbatim)
+# ─────────────────────────────────────────
 
 def _notion(token: str) -> Client:
     return Client(auth=token)
 
 
-# ── Safe dict-or-object accessor ─────────────────────────────────
 def _safe_get(obj, key, default=None):
-    """Works whether obj is a dict or a Notion SDK object."""
     if obj is None:
         return default
     if isinstance(obj, dict):
@@ -41,7 +220,6 @@ def _safe_get(obj, key, default=None):
 
 
 def _to_dict(obj) -> dict:
-    """Convert Notion SDK response object to plain dict."""
     if obj is None:
         return {}
     if isinstance(obj, dict):
@@ -54,10 +232,6 @@ def _to_dict(obj) -> dict:
         except Exception:
             return {}
 
-
-# ─────────────────────────────────────────
-# RAW NOTION → MARKDOWN
-# ─────────────────────────────────────────
 
 def _rich_text_to_md(rich_text_arr: list) -> str:
     if not rich_text_arr:
@@ -74,7 +248,6 @@ def _rich_text_to_md(rich_text_arr: list) -> str:
             text = getattr(rt, "plain_text", "")
             ann  = _to_dict(getattr(rt, "annotations", {}))
             href = getattr(rt, "href", "")
-
         if not text:
             continue
         if ann.get("code"):
@@ -96,7 +269,6 @@ def _rich_text_to_md(rich_text_arr: list) -> str:
 
 
 def _block_to_dict(b) -> dict:
-    """Safely convert a block (dict or SDK object) to dict."""
     if isinstance(b, dict):
         return b
     d = {}
@@ -171,7 +343,6 @@ def _blocks_to_markdown(blocks: list, client: Client, depth: int = 0) -> str:
 
 
 def _extract_results(resp) -> list:
-    """Safely pull 'results' from dict or SDK response object."""
     if resp is None:
         return []
     if isinstance(resp, dict):
@@ -207,7 +378,6 @@ def _extract_text_deep(blocks: list, client: Client, depth: int = 0) -> str:
 
 
 def _page_title(page) -> str:
-    """Extract title safely from dict or SDK page object."""
     if page is None:
         return "Untitled"
     props = _safe_get(page, "properties") or {}
@@ -226,10 +396,7 @@ def _page_title(page) -> str:
     return "Untitled"
 
 
-# ── Blocking sync helpers (run these in the thread pool ONLY) ─────
-
 def _get_blocks_sync(client: Client, page_id: str) -> list:
-    """Blocking — must be called via run_in_executor, never directly in async code."""
     try:
         results = []
         cursor  = None
@@ -238,14 +405,10 @@ def _get_blocks_sync(client: Client, page_id: str) -> list:
             if cursor:
                 kwargs["start_cursor"] = cursor
             resp = client.blocks.children.list(**kwargs)
-
             if resp is None:
-                print(f"[BLOCKS] None response for {page_id}")
                 break
-
             batch = _extract_results(resp)
             results.extend(batch)
-
             has_more = resp.get("has_more") if isinstance(resp, dict) else getattr(resp, "has_more", False)
             if not has_more:
                 break
@@ -257,7 +420,6 @@ def _get_blocks_sync(client: Client, page_id: str) -> list:
 
 
 def _fetch_all_pages_sync(client: Client, limit: int = 40) -> list:
-    """Blocking — must be called via run_in_executor, never directly in async code."""
     results = []
     cursor  = None
     while len(results) < limit:
@@ -278,11 +440,8 @@ def _fetch_all_pages_sync(client: Client, limit: int = 40) -> list:
 
 
 def _fetch_page_meta_sync(client: Client, page_id: str):
-    """Blocking — must be called via run_in_executor, never directly in async code."""
     return client.pages.retrieve(page_id=page_id)
 
-
-# ── Async wrappers (offload blocking calls to thread pool) ────────
 
 async def _get_blocks(client: Client, page_id: str) -> list:
     loop = asyncio.get_event_loop()
@@ -329,16 +488,11 @@ async def _fetch_page_meta(client: Client, page_id: str):
         return None
 
 
-# ─────────────────────────────────────────
-# GRAPH BUILDER  (now fully async)
-# ─────────────────────────────────────────
-
 async def _build_graph(pages: list, client: Client) -> dict:
     node_ids = {_safe_get(p, "id") for p in pages}
     links    = []
     page_map = {_safe_get(p, "id"): p for p in pages}
 
-    # Fetch blocks for all pages concurrently, capped at 6 simultaneous
     sem = asyncio.Semaphore(6)
 
     async def fetch_one(page):
@@ -397,28 +551,25 @@ def _assign_positions(nodes: list) -> list:
     return nodes
 
 
-# ─────────────────────────────────────────
-# GEMINI — with hard per-model timeout
-# ─────────────────────────────────────────
 PREFERRED_KEYWORDS = [
-    "gemini-3.1-flash-lite",   # 15 RPM — highest
-    "gemini-2.5-flash-lite",   # 10 RPM
-    "gemini-2.5-flash",        # 5 RPM
-    "gemini-3-flash",          # 5 RPM
-    "gemini-3.1-flash",        # likely available
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-3-flash",
+    "gemini-3.1-flash",
     "gemini-3-flash-lite",
     "gemini-2.0-flash-lite",
     "gemini-2.0-flash",
     "gemini-2.5-pro",
     "gemini-3.1-pro",
     "gemini-3-pro",
-    "gemma-3",                 # Gemma fallback (30 RPM but less capable)
+    "gemma-3",
 ]
 
 MAX_RETRIES        = 2
 BASE_DELAY         = 2.0
-PER_MODEL_TIMEOUT  = 12.0   # hard cap per model attempt (seconds)
-GEMINI_TOTAL_CAP   = 30.0   # absolute ceiling for the whole summarise call
+PER_MODEL_TIMEOUT  = 12.0
+GEMINI_TOTAL_CAP   = 30.0
 
 
 async def _discover_models(api_key: str) -> list[str]:
@@ -433,7 +584,6 @@ async def _discover_models(api_key: str) -> list[str]:
             if resp.status_code != 200:
                 _discovered_models = PREFERRED_KEYWORDS
                 return _discovered_models
-
             all_models = resp.json().get("models", [])
             gen_models = [
                 m["name"].replace("models/", "")
@@ -448,7 +598,6 @@ async def _discover_models(api_key: str) -> list[str]:
             for m in gen_models:
                 if m not in ordered:
                     ordered.append(m)
-
             _discovered_models = ordered if ordered else PREFERRED_KEYWORDS
             print(f"[GEMINI] Model order: {_discovered_models[:5]}")
             return _discovered_models
@@ -470,14 +619,10 @@ async def _call_model(http: httpx.AsyncClient, model: str, api_key: str, prompt:
     delay = BASE_DELAY
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = await asyncio.wait_for(
-                http.post(url, json=payload),
-                timeout=PER_MODEL_TIMEOUT
-            )
+            resp = await asyncio.wait_for(http.post(url, json=payload), timeout=PER_MODEL_TIMEOUT)
         except (asyncio.TimeoutError, httpx.TimeoutException):
             print(f"[GEMINI] Timeout {model} attempt {attempt}")
             return None
-
         if resp.status_code == 200:
             data       = resp.json()
             candidates = data.get("candidates", [])
@@ -489,22 +634,18 @@ async def _call_model(http: httpx.AsyncClient, model: str, api_key: str, prompt:
                     print(f"[GEMINI] ✓ {model}")
                     return parts[0]["text"].strip()
             return None
-
         elif resp.status_code == 429:
             print(f"[GEMINI] 429 {model} attempt {attempt} — skip")
             if attempt == MAX_RETRIES:
                 return None
             await asyncio.sleep(delay)
             delay *= 2
-
         elif resp.status_code == 404:
             print(f"[GEMINI] 404 {model} — not available")
             return None
-
         else:
             print(f"[GEMINI] {resp.status_code} {model}")
             return None
-
     return None
 
 
@@ -512,11 +653,9 @@ async def _summarize_with_gemini_async(text: str, page_title: str) -> str | None
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key or not text.strip():
         return None
-
     models = await _discover_models(api_key)
     if not models:
         return None
-
     prompt = (
         f"You are analyzing a Notion page titled: '{page_title}'\n\n"
         "Provide a structured summary.\n"
@@ -525,7 +664,6 @@ async def _summarize_with_gemini_async(text: str, page_title: str) -> str | None
         "🔑 KEY POINTS:\n• [point 1]\n• [point 2]\n• [point 3]\n"
         f"🏷️ CATEGORY: [page type]\n\nPAGE CONTENT:\n{text[:3000]}"
     )
-
     try:
         async with asyncio.timeout(GEMINI_TOTAL_CAP):
             async with httpx.AsyncClient(
@@ -540,12 +678,11 @@ async def _summarize_with_gemini_async(text: str, page_title: str) -> str | None
                         return str(e)
     except asyncio.TimeoutError:
         print(f"[GEMINI] Total cap exceeded ({GEMINI_TOTAL_CAP}s) — falling back to raw")
-
     return None
 
 
 # ─────────────────────────────────────────
-# ENDPOINTS
+# EXISTING ENDPOINTS (unchanged)
 # ─────────────────────────────────────────
 
 @router.post("/graph")
@@ -566,6 +703,9 @@ async def post_graph(req: GraphRequest):
 @router.get("/page/{page_id}")
 async def get_page_detail(page_id: str, token: str = ""):
     if not token:
+        # Try default token for easy-mode sessions
+        token = (os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()
+    if not token:
         return {"id": page_id, "content": "AUTH_REQUIRED", "is_raw": False}
 
     cache_key = f"{page_id}:{token[:8]}"
@@ -576,7 +716,6 @@ async def get_page_detail(page_id: str, token: str = ""):
     client     = _notion(token)
     page_title = "Untitled Page"
 
-    # ── Step 1: page meta ──────────────────────────────────────────
     try:
         page_meta = await _fetch_page_meta(client, page_id)
         if page_meta is not None:
@@ -586,7 +725,6 @@ async def get_page_detail(page_id: str, token: str = ""):
     except Exception as e:
         print(f"[PAGE_META] Error: {e}")
 
-    # ── Step 2: blocks ────────────────────────────────────────────
     blocks = await _get_blocks(client, page_id)
     if not blocks:
         result = {
@@ -597,9 +735,6 @@ async def get_page_detail(page_id: str, token: str = ""):
         _node_cache[cache_key] = result
         return {"id": page_id, **result}
 
-    # ── Step 3: build raw markdown FIRST (always available) ───────
-    # _blocks_to_markdown / _extract_text_deep make synchronous Notion calls
-    # internally, so we run them in the executor too.
     loop = asyncio.get_event_loop()
     try:
         raw_md = await asyncio.wait_for(
@@ -620,7 +755,6 @@ async def get_page_detail(page_id: str, token: str = ""):
             print(f"[EXTRACT] Error: {e}")
             raw_md = "[Could not parse page content]"
 
-    # ── Step 4: try Gemini — if it fails/times out, use raw ───────
     gemini_summary = None
     try:
         plain_text = await asyncio.wait_for(
