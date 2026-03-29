@@ -55,6 +55,13 @@ const GlobalStyles = () => (
       100% { transform: translateY(100vh); opacity: 0; }
     }
 
+    .hide-mobile {
+      @media (max-width: 768px) { display: none !important; }
+    }
+    .hide-tablet {
+      @media (max-width: 1024px) { display: none !important; }
+    }
+
     .node-label-html {
       pointer-events: none !important;
       z-index: 1 !important;
@@ -240,7 +247,7 @@ function TopHeader() {
       zIndex: 100, background: "transparent",
       backdropFilter: "blur(12px)",
     }}>
-      <div style={{ fontSize: "10px", letterSpacing: "5px", color: "#000", fontFamily: "monospace", opacity: 0.5, fontWeight: 700 }}>
+      <div className="hide-mobile" style={{ fontSize: "10px", letterSpacing: "5px", color: "#000", fontFamily: "monospace", opacity: 0.5, fontWeight: 700 }}>
         UTC {time} // NB_CORE_ACTIVE
       </div>
       <div style={{ fontSize: "10px", letterSpacing: "5px", color: "#000", fontFamily: "monospace", fontWeight: 900 }}>
@@ -254,24 +261,28 @@ function TopHeader() {
 function HeroGrid({ onSubmit }) {
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.8fr", height: "100%" }}>
-        <div style={{ padding: "40px", borderRight: "1px solid rgba(0,0,0,0.08)" }}>
+      <div style={{ 
+        display: "grid", 
+        gridTemplateColumns: window.innerWidth < 768 ? "1fr" : (window.innerWidth < 1100 ? "1.5fr 1fr" : "1.4fr 1fr 0.8fr"),
+        height: "100%" 
+      }}>
+        <div style={{ padding: window.innerWidth < 768 ? "30px 24px" : "40px", borderRight: window.innerWidth < 768 ? "none" : "1.5px solid rgba(0,0,0,0.08)" }}>
           <motion.h2
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8, delay: 0.2 }}
-            style={{ fontSize: "32px", lineHeight: "1.1", maxWidth: "450px", fontWeight: 500, letterSpacing: "-0.01em" }}
+            style={{ fontSize: window.innerWidth < 768 ? "24px" : "32px", lineHeight: "1.1", maxWidth: "450px", fontWeight: 500, letterSpacing: "-0.01em" }}
           >
             Notion Brain. Centralizing your workflow by visually mapping your docs, projects, and notes into an interactive 3D universe.
           </motion.h2>
         </div>
-        <div style={{ padding: "40px", borderRight: "1px solid rgba(0,0,0,0.08)", fontSize: "11px", letterSpacing: "1.5px", lineHeight: "1.8" }}>
+        <div className="hide-mobile" style={{ padding: "40px", borderRight: window.innerWidth < 1100 ? "none" : "1.5px solid rgba(0,0,0,0.08)", fontSize: "11px", letterSpacing: "1.5px", lineHeight: "1.8" }}>
           <div style={{ color: "#999", marginBottom: "8px", fontWeight: 700 }}>SYSTEM_ORACLE:</div>
           <div>POWERED BY <span style={{ textDecoration: "underline" }}>NOTION API</span> //</div>
           <div>SUMMARIZING NODES <span style={{ textDecoration: "underline" }}>STRUCTURALLY</span></div>
           <div style={{ marginTop: "16px", color: "#999" }}>AI_ENGINE: <span style={{ color: "#000" }}>ACTIVE</span></div>
         </div>
-        <div style={{ padding: "40px", fontSize: "11px", letterSpacing: "2px" }}>
+        <div className="hide-tablet" style={{ padding: "40px", fontSize: "11px", letterSpacing: "2px" }}>
           <div style={{ color: "#999", marginBottom: "12px" }}>2026 // EST</div>
           <div style={{ color: "#666" }}>
             DEVELOPED BY{" "}
@@ -292,10 +303,10 @@ function HeroGrid({ onSubmit }) {
           </div>
         </div>
       </div>
-      <div style={{ height: "140px", borderTop: "1px solid rgba(0,0,0,0.08)", display: "flex" }}>
-        {Array.from({ length: 14 }).map((_, i) => (
+      <div style={{ height: window.innerWidth < 768 ? "80px" : "140px", borderTop: "1px solid rgba(0,0,0,0.08)", display: "flex" }}>
+        {Array.from({ length: window.innerWidth < 768 ? 6 : 14 }).map((_, i) => (
           <div key={i} style={{
-            flex: 1, borderRight: i === 13 ? "none" : "1.5px solid rgba(0,0,0,0.08)",
+            flex: 1, borderRight: i === (window.innerWidth < 768 ? 5 : 13) ? "none" : "1.5px solid rgba(0,0,0,0.08)",
             position: "relative", display: "flex", alignItems: "center", justifyContent: "center",
           }}>
             <div style={{ position: "absolute", top: -5, left: -1, width: 2, height: 10, background: "#000" }} />
@@ -349,13 +360,20 @@ function ConnectionPanel({ onSubmit }) {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.7, delay: 0.4 }}
-      style={{ padding: "50px 24px", display: "flex", gap: "80px", alignItems: "flex-end" }}
+      style={{ 
+        padding: window.innerWidth < 768 ? "30px 24px" : "50px 24px", 
+        display: "flex", 
+        flexDirection: window.innerWidth < 768 ? "column" : "row",
+        gap: window.innerWidth < 768 ? "25px" : "80px", 
+        alignItems: window.innerWidth < 768 ? "flex-start" : "flex-end" 
+      }}
     >
-      <div style={{ flex: 1 }}>
+      <div style={{ width: "100%", flex: 1 }}>
         <div style={{ fontSize: "10px", letterSpacing: "3px", color: "#999", marginBottom: "15px", fontWeight: 700 }}>&gt;_CONNECT WORKSPACE</div>
         <div style={{
           border: `2px solid ${focused ? "#000" : "rgba(0,0,0,0.15)"}`,
-          padding: "8px 20px", display: "flex", alignItems: "center", maxWidth: "450px",
+          padding: "8px 20px", display: "flex", alignItems: "center", 
+          maxWidth: window.innerWidth < 768 ? "100%" : "450px",
           transition: "border-color 0.3s",
         }}>
           <span style={{ marginRight: "12px", fontWeight: 600, opacity: 0.3 }}>&gt;</span>
@@ -367,13 +385,16 @@ function ConnectionPanel({ onSubmit }) {
             placeholder="secret_xxxxxx..."
             type="password"
             style={{ flex: 1, background: "none", border: "none", outline: "none",
-              fontSize: "15px", fontFamily: "monospace", letterSpacing: "2px", fontWeight: 500 }}
+              fontSize: "15px", fontFamily: "monospace", letterSpacing: "2px", fontWeight: 500, width: "100%" }}
           />
         </div>
       </div>
       <button
         onClick={() => onSubmit(token)}
-        style={{ padding: "20px 50px", background: "#000", color: "#fff", border: "none",
+        style={{ 
+          padding: window.innerWidth < 768 ? "18px 0" : "20px 50px", 
+          width: window.innerWidth < 768 ? "100%" : "auto",
+          background: "#000", color: "#fff", border: "none",
           fontSize: "13px", letterSpacing: "4px", fontWeight: 700, cursor: "pointer",
           transition: "transform 0.2s, opacity 0.2s" }}
         onMouseEnter={e => e.target.style.opacity = "0.8"}
@@ -620,23 +641,24 @@ export default function App() {
 
             {/* HUD */}
             <div style={{
-              position: "fixed", top: 24, left: 24, zIndex: 200,
-              display: "flex", alignItems: "center", gap: "25px",
+              position: "fixed", top: window.innerWidth < 768 ? 16 : 24, left: window.innerWidth < 768 ? 16 : 24, zIndex: 200,
+              display: "flex", alignItems: "center", gap: window.innerWidth < 768 ? "12px" : "25px",
               background: "rgba(245,242,236,0.88)", backdropFilter: "blur(10px)",
-              padding: "10px 20px", border: "1px solid rgba(0,0,0,0.12)",
+              padding: "10px 15px", border: "1px solid rgba(0,0,0,0.12)",
+              maxWidth: "calc(100vw - 32px)",
             }}>
-              <h2 style={{ fontSize: "16px", letterSpacing: "5px", fontWeight: 700, fontFamily: "Rajdhani" }}>
+              <h2 style={{ fontSize: window.innerWidth < 768 ? "13px" : "16px", letterSpacing: "3px", fontWeight: 700, fontFamily: "Rajdhani" }}>
                 NB_UNIVERSE_X1
               </h2>
               <button
                 onClick={() => { setPhase("landing"); setSelectedNode(null); setData({ nodes: [], links: [] }); }}
                 style={{
                   background: "#000", color: "#fff", border: "none",
-                  padding: "6px 16px", fontSize: "10px", cursor: "pointer",
-                  fontWeight: 700, letterSpacing: "3px",
+                  padding: "5px 12px", fontSize: "9px", cursor: "pointer",
+                  fontWeight: 700, letterSpacing: "2px",
                 }}
               >
-                TERMINATE_SYNC
+                TERMINATE
               </button>
             </div>
 
@@ -678,9 +700,11 @@ export default function App() {
                   exit={{ x: "100%" }}
                   transition={{ type: "spring", damping: 28, stiffness: 220 }}
                   style={{
-                    position: "fixed", right: 0, top: 0, bottom: 0, width: "500px",
+                    position: "fixed", right: 0, top: 0, bottom: 0, 
+                    width: window.innerWidth < 768 ? "100%" : (window.innerWidth < 1200 ? "400px" : "500px"),
                     background: "rgba(245,242,236,0.97)", backdropFilter: "blur(40px)",
-                    borderLeft: "3.5px solid #000", zIndex: 9999, padding: "80px 50px",
+                    borderLeft: window.innerWidth < 768 ? "none" : "3.5px solid #000", zIndex: 9999, 
+                    padding: window.innerWidth < 768 ? "60px 24px" : "80px 50px",
                     display: "flex", flexDirection: "column", boxShadow: "-20px 0 40px rgba(0,0,0,0.08)",
                   }}
                 >
@@ -720,7 +744,7 @@ export default function App() {
                     NODE_SYNC // AI_ORACLE
                   </div>
                   <h3 style={{
-                    fontSize: "42px", fontWeight: 900, textTransform: "uppercase",
+                    fontSize: window.innerWidth < 768 ? "32px" : "42px", fontWeight: 900, textTransform: "uppercase",
                     marginBottom: "40px", lineHeight: 0.9, letterSpacing: "-0.02em", fontFamily: "Outfit",
                   }}>
                     {selectedNode.label}
