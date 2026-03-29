@@ -12,7 +12,10 @@ import MarkdownRenderer from "./MarkdownRenderer";
 // Environment configuration
 const getApiBase = () => {
   try {
-    return import.meta.env.VITE_API_URL || "http://localhost:8000";
+    let url = import.meta.env.VITE_API_URL || "http://localhost:8000";
+    // Remove trailing slash if present to avoid // mistakes
+    if (url.endsWith("/")) url = url.slice(0, -1);
+    return url;
   } catch {
     return "http://localhost:8000";
   }
