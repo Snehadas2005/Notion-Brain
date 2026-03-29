@@ -5,7 +5,9 @@ from notion_client import Client
 import math
 import os
 import httpx
+from dotenv import load_dotenv
 
+load_dotenv()
 router = APIRouter()
 
 # ─────────────────────────────────────────
@@ -205,10 +207,8 @@ async def _summarize_with_gemini_async(text: str, page_title: str = "") -> str:
     )
 
     models = [
-        "gemini-2.0-flash",
-        "gemini-1.5-flash-latest",
         "gemini-1.5-flash",
-        "gemini-1.0-pro",
+        "gemini-1.5-pro"
     ]
 
     async with httpx.AsyncClient(timeout=45.0) as client:
@@ -245,13 +245,15 @@ async def _summarize_with_gemini_async(text: str, page_title: str = "") -> str:
                     print(f"[GEMINI] Model {model} not found, trying next...")
                     continue
                 else:
-                    print(f"[GEMINI] Model {model} returned {resp.status_code}: {resp.text[:200]}")
+                    print(f"[GEMINI ERROR] {model} -> {resp.status_code}")
+                    print(resp.text)
                     continue
+            
             except Exception as e:
                 print(f"[GEMINI] Exception with model {model}: {str(e)}")
                 continue
 
-    return f"[GEMINI_FAILED] All models exhausted. Raw content preview:\n{text[:400]}"
+    return f"DEBUG ERROR: {resp.status_code} {resp.text}"
 
 
 # ─────────────────────────────────────────
