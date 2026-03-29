@@ -6,6 +6,7 @@ import math
 import os
 import asyncio
 import httpx
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,6 +18,12 @@ class GraphRequest(BaseModel):
 
 _node_cache = {}
 _discovered_models = None
+
+# Thread pool — keeps blocking Notion SDK calls off the event loop
+_executor = ThreadPoolExecutor(max_workers=4)
+
+# Timeout (seconds) for any single blocking Notion operation
+NOTION_CALL_TIMEOUT = 20.0
 
 
 def _notion(token: str) -> Client:
@@ -39,7 +46,6 @@ def _to_dict(obj) -> dict:
         return {}
     if isinstance(obj, dict):
         return obj
-    # SDK objects expose __dict__ or can be iterated
     try:
         return dict(obj)
     except Exception:
@@ -220,7 +226,10 @@ def _page_title(page) -> str:
     return "Untitled"
 
 
-def _get_blocks(client: Client, page_id: str) -> list:
+# ── Blocking sync helpers (run these in the thread pool ONLY) ─────
+
+def _get_blocks_sync(client: Client, page_id: str) -> list:
+    """Blocking — must be called via run_in_executor, never directly in async code."""
     try:
         results = []
         cursor  = None
@@ -247,7 +256,8 @@ def _get_blocks(client: Client, page_id: str) -> list:
         return []
 
 
-def _fetch_all_pages(client: Client, limit: int = 40) -> list:
+def _fetch_all_pages_sync(client: Client, limit: int = 40) -> list:
+    """Blocking — must be called via run_in_executor, never directly in async code."""
     results = []
     cursor  = None
     while len(results) < limit:
@@ -267,14 +277,81 @@ def _fetch_all_pages(client: Client, limit: int = 40) -> list:
     return results
 
 
-def _build_graph(pages: list, client: Client) -> dict:
-    node_ids  = {_safe_get(p, "id") for p in pages}
-    links     = []
-    page_map  = {_safe_get(p, "id"): p for p in pages}
+def _fetch_page_meta_sync(client: Client, page_id: str):
+    """Blocking — must be called via run_in_executor, never directly in async code."""
+    return client.pages.retrieve(page_id=page_id)
 
-    for page in pages:
-        pid    = _safe_get(page, "id")
-        blocks = _get_blocks(client, pid)
+
+# ── Async wrappers (offload blocking calls to thread pool) ────────
+
+async def _get_blocks(client: Client, page_id: str) -> list:
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_executor, _get_blocks_sync, client, page_id),
+            timeout=NOTION_CALL_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        print(f"[BLOCKS] Timeout fetching blocks for {page_id}")
+        return []
+    except Exception as e:
+        print(f"[BLOCKS] Async wrapper error for {page_id}: {e}")
+        return []
+
+
+async def _fetch_all_pages(client: Client, limit: int = 40) -> list:
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_executor, _fetch_all_pages_sync, client, limit),
+            timeout=NOTION_CALL_TIMEOUT * 2
+        )
+    except asyncio.TimeoutError:
+        print("[PAGES] Timeout fetching all pages")
+        return []
+    except Exception as e:
+        print(f"[PAGES] Async wrapper error: {e}")
+        return []
+
+
+async def _fetch_page_meta(client: Client, page_id: str):
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_executor, _fetch_page_meta_sync, client, page_id),
+            timeout=NOTION_CALL_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        print(f"[PAGE_META] Timeout for {page_id}")
+        return None
+    except Exception as e:
+        print(f"[PAGE_META] Async wrapper error for {page_id}: {e}")
+        return None
+
+
+# ─────────────────────────────────────────
+# GRAPH BUILDER  (now fully async)
+# ─────────────────────────────────────────
+
+async def _build_graph(pages: list, client: Client) -> dict:
+    node_ids = {_safe_get(p, "id") for p in pages}
+    links    = []
+    page_map = {_safe_get(p, "id"): p for p in pages}
+
+    # Fetch blocks for all pages concurrently, capped at 6 simultaneous
+    sem = asyncio.Semaphore(6)
+
+    async def fetch_one(page):
+        pid = _safe_get(page, "id")
+        async with sem:
+            return pid, await _get_blocks(client, pid)
+
+    results = await asyncio.gather(*[fetch_one(p) for p in pages], return_exceptions=True)
+
+    for item in results:
+        if isinstance(item, Exception):
+            continue
+        pid, blocks = item
         for raw_b in blocks:
             b     = _block_to_dict(raw_b) if not isinstance(raw_b, dict) else raw_b
             btype = b.get("type", "")
@@ -296,9 +373,9 @@ def _build_graph(pages: list, client: Client) -> dict:
             continue
         p = page_map[pid]
         final_nodes.append({
-            "id":    pid,
-            "label": _page_title(p),
-            "url":   _safe_get(p, "url") or "",
+            "id":     pid,
+            "label":  _page_title(p),
+            "url":    _safe_get(p, "url") or "",
             "edited": _safe_get(p, "last_edited_time") or "",
         })
     valid_ids   = {n["id"] for n in final_nodes}
@@ -393,14 +470,13 @@ async def _call_model(http: httpx.AsyncClient, model: str, api_key: str, prompt:
     delay = BASE_DELAY
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            # Hard timeout per attempt
             resp = await asyncio.wait_for(
                 http.post(url, json=payload),
                 timeout=PER_MODEL_TIMEOUT
             )
         except (asyncio.TimeoutError, httpx.TimeoutException):
             print(f"[GEMINI] Timeout {model} attempt {attempt}")
-            return None   # skip to next model immediately
+            return None
 
         if resp.status_code == 200:
             data       = resp.json()
@@ -451,12 +527,11 @@ async def _summarize_with_gemini_async(text: str, page_title: str) -> str | None
     )
 
     try:
-        # Absolute ceiling — never hang longer than this
         async with asyncio.timeout(GEMINI_TOTAL_CAP):
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=8.0, read=PER_MODEL_TIMEOUT, write=5.0, pool=5.0)
             ) as http:
-                for model in models[:5]:   # try max 5 models
+                for model in models[:5]:
                     try:
                         result = await _call_model(http, model, api_key, prompt)
                         if result:
@@ -466,7 +541,7 @@ async def _summarize_with_gemini_async(text: str, page_title: str) -> str | None
     except asyncio.TimeoutError:
         print(f"[GEMINI] Total cap exceeded ({GEMINI_TOTAL_CAP}s) — falling back to raw")
 
-    return None   # triggers raw fallback
+    return None
 
 
 # ─────────────────────────────────────────
@@ -480,8 +555,8 @@ async def post_graph(req: GraphRequest):
         raise HTTPException(status_code=400, detail="TOKEN_MISSING")
     try:
         client = _notion(token)
-        pages  = _fetch_all_pages(client, limit=40)
-        graph  = _build_graph(pages, client)
+        pages  = await _fetch_all_pages(client, limit=40)
+        graph  = await _build_graph(pages, client)
         graph["nodes"] = _assign_positions(graph["nodes"])
         return graph
     except Exception as e:
@@ -498,11 +573,12 @@ async def get_page_detail(page_id: str, token: str = ""):
         c = _node_cache[cache_key]
         return {"id": page_id, "content": c["content"], "raw_content": c.get("raw_content", ""), "is_raw": c["is_raw"]}
 
-    # ── Step 1: page meta ──────────────────────────────────────────
     client     = _notion(token)
     page_title = "Untitled Page"
+
+    # ── Step 1: page meta ──────────────────────────────────────────
     try:
-        page_meta = client.pages.retrieve(page_id=page_id)
+        page_meta = await _fetch_page_meta(client, page_id)
         if page_meta is not None:
             page_title = _page_title(page_meta)
         else:
@@ -511,7 +587,7 @@ async def get_page_detail(page_id: str, token: str = ""):
         print(f"[PAGE_META] Error: {e}")
 
     # ── Step 2: blocks ────────────────────────────────────────────
-    blocks = _get_blocks(client, page_id)
+    blocks = await _get_blocks(client, page_id)
     if not blocks:
         result = {
             "content": "[EMPTY_PAGE] No content found or integration lacks access.\n\nMake sure your Notion integration is added to this page via Share → Connections.",
@@ -522,24 +598,35 @@ async def get_page_detail(page_id: str, token: str = ""):
         return {"id": page_id, **result}
 
     # ── Step 3: build raw markdown FIRST (always available) ───────
+    # _blocks_to_markdown / _extract_text_deep make synchronous Notion calls
+    # internally, so we run them in the executor too.
+    loop = asyncio.get_event_loop()
     try:
-        raw_md = _blocks_to_markdown(blocks, client, depth=0)
-    except Exception as e:
+        raw_md = await asyncio.wait_for(
+            loop.run_in_executor(_executor, _blocks_to_markdown, blocks, client, 0),
+            timeout=NOTION_CALL_TIMEOUT
+        )
+    except (asyncio.TimeoutError, Exception) as e:
         print(f"[MARKDOWN] Error: {e}")
         raw_md = ""
 
     if not raw_md.strip():
         try:
-            raw_md = _extract_text_deep(blocks, client, depth=0)
-        except Exception as e:
+            raw_md = await asyncio.wait_for(
+                loop.run_in_executor(_executor, _extract_text_deep, blocks, client, 0),
+                timeout=NOTION_CALL_TIMEOUT
+            )
+        except (asyncio.TimeoutError, Exception) as e:
             print(f"[EXTRACT] Error: {e}")
             raw_md = "[Could not parse page content]"
 
     # ── Step 4: try Gemini — if it fails/times out, use raw ───────
-    plain_text     = ""
     gemini_summary = None
     try:
-        plain_text     = _extract_text_deep(blocks, client, depth=0)
+        plain_text = await asyncio.wait_for(
+            loop.run_in_executor(_executor, _extract_text_deep, blocks, client, 0),
+            timeout=NOTION_CALL_TIMEOUT
+        )
         gemini_summary = await _summarize_with_gemini_async(plain_text, page_title)
     except Exception as e:
         print(f"[GEMINI] Unexpected error: {e}")
