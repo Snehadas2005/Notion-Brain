@@ -471,7 +471,6 @@ function NodeBlock({ node, isSelected, onNodeClick, assemblyDelay }) {
           roughness={0} metalness={0.9}
         />
       </mesh>
-      {isSelected && <Line points={[[0, -15, 0], [0, 15, 0]]} color="#000" lineWidth={0.8} transparent opacity={0.2} />}
       <Html center position={[0, 2.0, 0]} className="node-label-html" portal={document.body}>
         <div style={{
           background: isSelected ? "#000" : (hovered ? "rgba(0,0,0,0.85)" : "rgba(245,242,236,0.92)"),
