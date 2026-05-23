@@ -12,6 +12,7 @@ venv/
 .env
 .venv
 env/
+/.venv
 build/
 develop-eggs/
 dist/
