@@ -19,7 +19,53 @@ class GraphRequest(BaseModel):
 
 class LinkRequest(BaseModel):
     page_url: str
+class RootPagesRequest(BaseModel):
+    token: str
 
+@router.post("/list-root-pages")
+async def list_root_pages(req: RootPagesRequest):
+    """
+    Fetches only the top-level workspace pages that do not have a parent page,
+    allowing the user to pick which cluster they want to visualize.
+    """
+    token = req.token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="TOKEN_MISSING")
+    try:
+        client = _notion(token)
+        # Search for pages in the workspace
+        raw_results = await _fetch_all_pages(client, limit=60)
+        
+        root_pages = []
+        for p in raw_results:
+            parent_type = _safe_get(_safe_get(p, "parent"), "type")
+            # If the parent is a workspace or block (not another page/database), it's a top-level root page!
+            if parent_type in ["workspace", "block", None]:
+                root_pages.append({
+                    "id": _safe_get(p, "id"),
+                    "label": _page_title(p)
+                })
+        return {"root_pages": root_pages}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"FETCH_ERROR: {str(e)}")
+
+@router.post("/graph-from-chosen-root")
+async def graph_from_chosen_root(req: GraphRequest):
+    """
+    Builds the graph using the explicitly selected root page id from Advanced Mode.
+    """
+    token = (req.token or "").strip()
+    url = (req.url or "").strip() # We reuse the URL field to pass the chosen page_id
+    if not token or not url:
+        raise HTTPException(status_code=400, detail="TOKEN_OR_PAGE_ID_MISSING")
+    try:
+        client = _notion(token)
+        graph = await _build_graph_from_root(url, client)
+        graph["nodes"] = _assign_positions(graph["nodes"])
+        return graph
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"GRAPH_ERROR: {str(e)}")
+        
 _node_cache = {}
 _discovered_models = None
 

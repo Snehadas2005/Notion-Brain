@@ -77,7 +77,7 @@ const getNodeThemeColors = (node) => {
   if (isLevel2) {
     return {
       base: `hsl(${baseHue}, 60%, 65%)`, // Muted light tint for subpages
-      textOnSolid: "#000000",
+      textOnSolid: "#b9b9b9",
     };
   }
 
@@ -705,8 +705,16 @@ function MainTitle() {
   );
 }
 
-function ConnectionPanel({ onSubmitToken, onSubmitLink }) {
-  const [mode, setMode] = useState("easy");
+function ConnectionPanel({
+  onSubmitToken,
+  onSubmitLink,
+  selectingRoot,
+  rootPages,
+  handleSelectRootPage,
+  setSelectingRoot,
+  setRootPages,
+}) {
+  const [mode, setMode] = useState("easy"); // "easy" | "advanced"
   const [token, setToken] = useState("");
   const [url, setUrl] = useState("");
   const [focused, setFocused] = useState(false);
@@ -754,8 +762,11 @@ function ConnectionPanel({ onSubmitToken, onSubmitLink }) {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.7, delay: 0.4 }}
-      style={{ padding: isMobile ? "30px 24px" : "50px 24px" }}
+      style={{
+        padding: isMobile ? "30px 24px" : "50px 24px",
+      }}
     >
+      {/* ── Mode tabs ─────────────────────────────────────────────── */}
       <div
         style={{
           display: "flex",
@@ -777,6 +788,7 @@ function ConnectionPanel({ onSubmitToken, onSubmitLink }) {
         </button>
       </div>
 
+      {/* ── Easy mode ─────────────────────────────────────────────── */}
       {mode === "easy" && (
         <div
           style={{
@@ -849,63 +861,141 @@ function ConnectionPanel({ onSubmitToken, onSubmitLink }) {
         </div>
       )}
 
+      {/* ── Advanced mode ─────────────────────────────────────────── */}
       {mode === "advanced" && (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: isMobile ? "column" : "row",
-            gap: isMobile ? "25px" : "80px",
-            alignItems: isMobile ? "flex-start" : "flex-end",
-          }}
-        >
-          <div style={{ width: "100%", flex: 1 }}>
-            <div
-              style={{
-                fontSize: "10px",
-                letterSpacing: "3px",
-                color: "#999",
-                marginBottom: "15px",
-                fontWeight: 700,
-              }}
-            >
-              &gt;_CONNECT WORKSPACE
-            </div>
-            <div style={inputWrapStyle}>
-              <span
-                style={{ marginRight: "12px", fontWeight: 600, opacity: 0.3 }}
-              >
-                &gt;
-              </span>
-              <input
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                onFocus={() => setFocused(true)}
-                onBlur={() => setFocused(false)}
-                onKeyDown={(e) => e.key === "Enter" && onSubmitToken(token)}
-                placeholder="secret_xxxxxx..."
-                type="password"
+        <div style={{ width: "100%" }}>
+          {selectingRoot ? (
+            <div>
+              <div
                 style={{
-                  flex: 1,
+                  fontSize: "10px",
+                  letterSpacing: "3px",
+                  color: "#999",
+                  marginBottom: "20px",
+                  fontWeight: 700,
+                }}
+              >
+                &gt;_SELECT WORKSPACE NODE HUB TO VISUALIZE:
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr",
+                  gap: "12px",
+                  maxWidth: "500px",
+                }}
+              >
+                {rootPages.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => handleSelectRootPage(p.id)}
+                    style={{
+                      background: "transparent",
+                      border: "2px solid #000000",
+                      padding: "14px 20px",
+                      textAlign: "left",
+                      fontSize: "13px",
+                      fontFamily: "monospace",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      transition: "all 0.2s",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.target.style.background = "#000000";
+                      e.target.style.color = "#ffffff";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.target.style.background = "transparent";
+                      e.target.style.color = "#000000";
+                    }}
+                  >
+                    📄 {p.label.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => {
+                  setSelectingRoot(false);
+                  setRootPages([]);
+                }}
+                style={{
+                  marginTop: "20px",
                   background: "none",
                   border: "none",
-                  outline: "none",
-                  fontSize: "15px",
-                  fontFamily: "monospace",
+                  color: "#999",
+                  fontSize: "10px",
                   letterSpacing: "2px",
-                  fontWeight: 500,
-                  width: "100%",
+                  cursor: "pointer",
+                  textDecoration: "underline",
+                  padding: 0,
                 }}
-              />
+              >
+                RESET TOKEN CONNECTION
+              </button>
             </div>
-          </div>
-          <button
-            onClick={() => onSubmitToken(token)}
-            style={execBtnStyle}
-            onMouseEnter={(e) => (e.target.style.opacity = "0.8")}
-            onMouseLeave={(e) => (e.target.style.opacity = "1")}
-          >
-            EXECUTE_CONNECTION_
-          </button>
+          ) : (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: isMobile ? "column" : "row",
+                gap: isMobile ? "25px" : "80px",
+                alignItems: isMobile ? "flex-start" : "flex-end",
+              }}
+            >
+              <div style={{ width: "100%", flex: 1 }}>
+                <div
+                  style={{
+                    fontSize: "10px",
+                    letterSpacing: "3px",
+                    color: "#999",
+                    marginBottom: "15px",
+                    fontWeight: 700,
+                  }}
+                >
+                  &gt;_CONNECT WORKSPACE
+                </div>
+                <div style={inputWrapStyle}>
+                  <span
+                    style={{
+                      marginRight: "12px",
+                      fontWeight: 600,
+                      opacity: 0.3,
+                    }}
+                  >
+                    &gt;
+                  </span>
+                  <input
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    onFocus={() => setFocused(true)}
+                    onBlur={() => setFocused(false)}
+                    onKeyDown={(e) => e.key === "Enter" && onSubmitToken(token)}
+                    placeholder="secret_xxxxxx..."
+                    type="password"
+                    style={{
+                      flex: 1,
+                      background: "none",
+                      border: "none",
+                      outline: "none",
+                      fontSize: "15px",
+                      fontFamily: "monospace",
+                      letterSpacing: "2px",
+                      fontWeight: 500,
+                      width: "100%",
+                    }}
+                  />
+                </div>
+              </div>
+              <button
+                onClick={() => onSubmitToken(token)}
+                style={execBtnStyle}
+                onMouseEnter={(e) => (e.target.style.opacity = "0.8")}
+                onMouseLeave={(e) => (e.target.style.opacity = "1")}
+              >
+                EXECUTE_CONNECTION_
+              </button>
+            </div>
+          )}
         </div>
       )}
     </motion.div>
@@ -1063,6 +1153,8 @@ function NodeBlock({ node, isSelected, onNodeClick, assemblyDelay }) {
 
 // Main Application Component
 export default function App() {
+  const [rootPages, setRootPages] = useState([]);
+  const [selectingRoot, setSelectingRoot] = useState(false);
   const [phase, setPhase] = useState("landing");
   const [data, setData] = useState({ nodes: [], links: [] });
   const [selectedNode, setSelectedNode] = useState(null);
@@ -1085,7 +1177,7 @@ export default function App() {
     setPhase("loading");
     setError("");
     try {
-      const resp = await fetch(`${API_BASE}/api/graph`, {
+      const resp = await fetch(`${API_BASE}/api/list-root-pages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: customToken }),
@@ -1095,13 +1187,42 @@ export default function App() {
         throw new Error(err.detail || "CONNECT_ERROR");
       }
       const resData = await resp.json();
-      setData(resData);
-      setPhase("world");
+
+      if (resData.root_pages && resData.root_pages.length > 0) {
+        setRootPages(resData.root_pages);
+        setSelectingRoot(true);
+        setPhase("landing"); // Keep them on the panel to choose
+      } else {
+        throw new Error(
+          "NO_ROOT_PAGES_FOUND — Ensure pages are shared with your integration",
+        );
+      }
     } catch (err) {
       setError(err.message);
       setPhase("landing");
     }
   }, []);
+
+  const handleSelectRootPage = async (pageId) => {
+    setPhase("loading");
+    setSelectingRoot(false);
+    try {
+      const resp = await fetch(`${API_BASE}/api/graph-from-chosen-root`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: tokenRef.current, url: pageId }), // Send pageId via url parameter
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || "GRAPH_ERROR");
+      }
+      setData(await resp.json());
+      setPhase("world");
+    } catch (err) {
+      setError(err.message);
+      setPhase("landing");
+    }
+  };
 
   const handleSubmitLink = useCallback(async (pageUrl) => {
     if (!pageUrl.trim()) {
@@ -1202,6 +1323,11 @@ export default function App() {
                 <ConnectionPanel
                   onSubmitToken={handleSubmitToken}
                   onSubmitLink={handleSubmitLink}
+                  selectingRoot={selectingRoot}
+                  rootPages={rootPages}
+                  handleSelectRootPage={handleSelectRootPage}
+                  setSelectingRoot={setSelectingRoot}
+                  setRootPages={setRootPages}
                 />
               </div>
             </div>
